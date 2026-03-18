@@ -12,7 +12,7 @@ license = {text = "MIT"}
 
 [project.optional-dependencies]
 anthropic = ["httpx>=0.24"]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "httpx>=0.24"]
 
 [project.scripts]
 researchclaw = "researchclaw.cli:main"

@@ -402,7 +402,8 @@ class CodeGenAgent(BaseAgent):
                 # Check for critic feedback on this specific figure
                 fig_feedback = None
                 for fb in critic_feedback:
-                    if fb.get("figure_id") == figure_id:
+                    # BUG-FIX: guard against non-dict entries in feedback
+                    if isinstance(fb, dict) and fb.get("figure_id") == figure_id:
                         fig_feedback = fb
                         break
 
@@ -457,7 +458,15 @@ class CodeGenAgent(BaseAgent):
         x_label = fig_spec.get("x_label", "")
         y_label = fig_spec.get("y_label", "")
         width_key = fig_spec.get("width", "single_column")
-        data_source = fig_spec.get("data_source", {})
+        # BUG-FIX: LLM may return data_source as a plain string (e.g.
+        # "condition_comparison") instead of a dict.  Normalize to dict.
+        _raw_ds = fig_spec.get("data_source", {})
+        if isinstance(_raw_ds, str):
+            data_source = {"type": _raw_ds}
+        elif isinstance(_raw_ds, dict):
+            data_source = _raw_ds
+        else:
+            data_source = {}
 
         from researchclaw.agents.figure_agent.style_config import FIGURE_WIDTH, DEFAULT_FIGURE_HEIGHT
         width = FIGURE_WIDTH.get(width_key, FIGURE_WIDTH["single_column"])

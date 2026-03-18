@@ -262,11 +262,22 @@ class LLMClient:
                 # Non-retryable errors
                 if status == 403 and "not allowed to use model" in body:
                     raise  # Model not available — let fallback handle
-                if status == 400:
-                    raise  # Bad request — fix the request, don't retry
 
-                # Retryable: 429 (rate limit), 500, 502, 503, 504
-                if status in (429, 500, 502, 503, 504):
+                # 400 is normally non-retryable, but some providers
+                # (Azure OpenAI) return 400 during overload / rate-limit.
+                # Retry if the body hints at a transient issue.
+                if status == 400:
+                    _transient_400 = any(
+                        kw in body.lower()
+                        for kw in ("rate limit", "ratelimit", "overloaded",
+                                   "temporarily", "capacity", "throttl",
+                                   "too many", "retry")
+                    )
+                    if not _transient_400:
+                        raise  # Genuine bad request — don't retry
+
+                # Retryable: 429 (rate limit), transient 400, 500, 502, 503, 504
+                if status in (400, 429, 500, 502, 503, 504):
                     delay = self.config.retry_base_delay * (2**attempt)
                     # Add jitter
                     import random

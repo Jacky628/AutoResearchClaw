@@ -59,9 +59,29 @@ def cmd_run(args: argparse.Namespace) -> int:
     skip_preflight = cast(bool, args.skip_preflight)
     resume = cast(bool, args.resume)
     skip_noncritical = cast(bool, args.skip_noncritical_stage)
+    no_graceful_degradation = cast(bool, args.no_graceful_degradation)
 
     kb_root_path = None
     config = RCConfig.load(config_path, check_paths=False)
+
+    # Override graceful_degradation if CLI flag is set
+    if no_graceful_degradation:
+        import dataclasses as _dc_gd
+
+        new_research = _dc_gd.replace(config.research, graceful_degradation=False)
+        config = _dc_gd.replace(config, research=new_research)
+
+    # Derive gate behavior from project.mode (CLI --auto-approve overrides)
+    mode = config.project.mode.lower()
+    if auto_approve:
+        # Explicit CLI flag takes precedence over config mode
+        stop_on_gate = False
+    elif mode == "full-auto":
+        auto_approve = True
+        stop_on_gate = False
+    else:
+        # "semi-auto" and "docs-first" should block on gates
+        stop_on_gate = True
 
     if topic:
         import dataclasses
@@ -109,7 +129,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"  Run ID:  {run_id}")
     print(f"  Topic:   {config.research.topic}")
     print(f"  Output:  {run_dir}")
-    print(f"  Mode:    {config.experiment.mode}")
+    print(f"  Mode:    {config.project.mode}")
     print(f"  From:    Stage {int(from_stage)}: {from_stage.name}")
     print()
 
@@ -120,6 +140,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         adapters=adapters,
         from_stage=from_stage,
         auto_approve_gates=auto_approve,
+        stop_on_gate=stop_on_gate,
         skip_noncritical=skip_noncritical,
         kb_root=kb_root_path,
     )
@@ -341,6 +362,10 @@ def main(argv: list[str] | None = None) -> int:
     _ = run_p.add_argument(
         "--skip-noncritical-stage", action="store_true",
         help="Skip noncritical stages on failure instead of aborting"
+    )
+    _ = run_p.add_argument(
+        "--no-graceful-degradation", action="store_true",
+        help="Disable graceful degradation: fail pipeline on quality gate failure"
     )
     val_p = sub.add_parser("validate", help="Validate config file")
     _ = val_p.add_argument(

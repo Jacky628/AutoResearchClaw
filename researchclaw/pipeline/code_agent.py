@@ -170,6 +170,8 @@ class CodeAgent:
         stage_dir: Path,
         sandbox_factory: Any | None = None,
         experiment_config: Any | None = None,
+        domain_profile: Any | None = None,
+        code_search_result: Any | None = None,
     ) -> None:
         self._llm = llm
         self._pm = prompts
@@ -177,6 +179,8 @@ class CodeAgent:
         self._stage_dir = stage_dir
         self._sandbox_factory = sandbox_factory
         self._exp_config = experiment_config
+        self._domain_profile = domain_profile
+        self._code_search_result = code_search_result
         self._calls = 0
         self._runs = 0
         self._log: list[str] = []
@@ -289,6 +293,16 @@ class CodeAgent:
             exp_plan=exp_plan,
             metric=metric,
         )
+
+        # Inject domain context and code search results into blueprint prompt
+        domain_context = self._build_domain_context()
+        if domain_context:
+            sp = type(sp)(
+                system=sp.system,
+                user=sp.user + "\n\n" + domain_context,
+            )
+            self._log_event("  Injected domain context into blueprint prompt")
+
         resp = self._chat(sp.system, sp.user, max_tokens=8192)
 
         # Extract YAML block from response
@@ -308,6 +322,44 @@ class CodeAgent:
             self._log_event("  WARNING: Could not parse blueprint YAML")
 
         return arch_spec, blueprint
+
+    def _build_domain_context(self) -> str:
+        """Build domain-specific context for injection into prompts.
+
+        Includes:
+        - Domain profile hints (file structure, libraries, evaluation)
+        - Code search results (API patterns, reference code)
+        """
+        parts: list[str] = []
+
+        # Domain profile context
+        if self._domain_profile is not None:
+            try:
+                from researchclaw.domains.prompt_adapter import get_adapter
+                adapter = get_adapter(self._domain_profile)
+                blueprint_ctx = adapter.get_blueprint_context()
+                if blueprint_ctx:
+                    parts.append(
+                        "# Domain-Specific Guidance\n" + blueprint_ctx
+                    )
+            except Exception:
+                logger.debug("Failed to get domain context", exc_info=True)
+
+        # Code search results
+        if self._code_search_result is not None:
+            try:
+                prompt_ctx = self._code_search_result.to_prompt_context()
+                if prompt_ctx:
+                    parts.append(
+                        "# Reference Code from GitHub\n"
+                        "The following patterns were found in relevant open-source projects. "
+                        "Use them as reference for API usage and project structure.\n\n"
+                        + prompt_ctx
+                    )
+            except Exception:
+                logger.debug("Failed to get code search context", exc_info=True)
+
+        return "\n\n".join(parts)
 
     def _parse_blueprint(self, yaml_text: str) -> dict[str, Any] | None:
         """Parse blueprint YAML into a structured dict."""
@@ -832,6 +884,17 @@ class CodeAgent:
                 f"{arch_spec}\n"
             )
 
+        # BUG-004: Inject numerical stability requirements
+        hint += (
+            "\n\n## NUMERICAL STABILITY (MANDATORY)\n"
+            "- Add gradient clipping: `torch.nn.utils.clip_grad_norm_(params, 1.0)`\n"
+            "- After each optimizer step, check for NaN loss:\n"
+            "  `if torch.isnan(loss): print('FAIL: NaN detected'); break`\n"
+            "- When logging metrics, guard against NaN/Inf:\n"
+            "  `v = float(val); v = 0.0 if (math.isnan(v) or math.isinf(v)) else v`\n"
+            "- For RL: clip rewards to [-10, 10], use reward normalization\n"
+        )
+
         sp = self._pm.for_stage(
             "code_generation",
             topic=topic,
@@ -982,10 +1045,10 @@ class CodeAgent:
             f"## Other Files in Project\n{dep_summaries}\n\n"
             f"## Full File ({target_file}, {total_lines} lines)\n"
             f"```python\n{code}\n```\n\n"
-            "Output the COMPLETE fixed `{target_file}` in "
-            "```filename:{target_file}``` format. Fix the root cause, "
-            "not just the symptom."
-        ).format(target_file=target_file)
+            f"Output the COMPLETE fixed `{target_file}` in "
+            f"```filename:{target_file}``` format. Fix the root cause, "
+            f"not just the symptom."
+        )
 
         sys_prompt = (
             "You are a debugging expert. Fix the specific runtime error "

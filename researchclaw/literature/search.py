@@ -177,7 +177,7 @@ def search_papers(
                 time.sleep(1.0)
 
             elif src_lower == "arxiv":
-                papers = search_arxiv(query, limit=limit)
+                papers = search_arxiv(query, limit=limit, year_min=year_min)
                 all_papers.extend(papers)
                 cache_put(query, "arxiv", limit, _papers_to_dicts(papers))
                 source_stats["arxiv"] = len(papers)

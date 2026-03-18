@@ -138,6 +138,7 @@ MAX_DECISION_PIVOTS: int = 2  # Prevent infinite loops
 
 NONCRITICAL_STAGES: frozenset[Stage] = frozenset(
     {
+        Stage.QUALITY_GATE,       # 20: low quality should warn, not block deliverables
         Stage.KNOWLEDGE_ARCHIVE,  # 21: archival doesn't affect paper output
         # T3.4: CITATION_VERIFY removed — hallucinated citations MUST block export
     }
