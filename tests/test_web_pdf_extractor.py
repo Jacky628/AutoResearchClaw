@@ -40,9 +40,9 @@ class TestPDFExtractor:
         extractor = PDFExtractor()
         assert extractor.backend == "pymupdf"  # PyMuPDF is now installed
 
-    def test_extract_nonexistent_file(self):
+    def test_extract_nonexistent_file(self, tmp_path):
         extractor = PDFExtractor()
-        result = extractor.extract("/nonexistent/path/paper.pdf")
+        result = extractor.extract(tmp_path / "does_not_exist.pdf")
         assert not result.success or "not found" in result.error.lower() or result.error
 
     def test_extract_abstract_pattern(self):

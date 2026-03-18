@@ -276,8 +276,9 @@ class LLMClient:
                     if not _transient_400:
                         raise  # Genuine bad request — don't retry
 
-                # Retryable: 429 (rate limit), transient 400, 500, 502, 503, 504
-                if status in (400, 429, 500, 502, 503, 504):
+                # Retryable: 429 (rate limit), transient 400, 500, 502, 503, 504,
+                # 529 (Anthropic overloaded)
+                if status in (400, 429, 500, 502, 503, 504, 529):
                     delay = self.config.retry_base_delay * (2**attempt)
                     # Add jitter
                     import random
@@ -320,9 +321,13 @@ class LLMClient:
             data = self._anthropic.chat_completion(model, messages, max_tokens, temperature, json_mode)
         else:
             # Original OpenAI logic
+            # Copy messages to avoid mutating the caller's list (important for
+            # retries and model-fallback — each attempt must start from the
+            # original, un-modified messages).
+            msgs = [dict(m) for m in messages]
             body: dict[str, Any] = {
                 "model": model,
-                "messages": messages,
+                "messages": msgs,
                 "temperature": temperature,
             }
 
@@ -343,12 +348,12 @@ class LLMClient:
                         "Do not include any text outside the JSON object."
                     )
                     # Prepend to existing system message or add as new one
-                    if body["messages"] and body["messages"][0]["role"] == "system":
-                        body["messages"][0]["content"] = (
-                            _json_hint + "\n\n" + body["messages"][0]["content"]
+                    if msgs and msgs[0]["role"] == "system":
+                        msgs[0]["content"] = (
+                            _json_hint + "\n\n" + msgs[0]["content"]
                         )
                     else:
-                        body["messages"].insert(
+                        msgs.insert(
                             0, {"role": "system", "content": _json_hint}
                         )
                 else:

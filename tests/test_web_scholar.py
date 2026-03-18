@@ -50,6 +50,7 @@ class TestScholarPaper:
 
 
 class TestGoogleScholarClient:
+    @patch("researchclaw.web.scholar.HAS_SCHOLARLY", True)
     def test_available_always_true(self):
         """scholarly is now an installed dependency, always available."""
         client = GoogleScholarClient()
@@ -98,6 +99,7 @@ class TestGoogleScholarClient:
         assert paper.year == 0
         assert paper.authors == []
 
+    @patch("researchclaw.web.scholar.HAS_SCHOLARLY", True)
     def test_rate_limiting(self):
         client = GoogleScholarClient(inter_request_delay=0.01)
         t0 = time.monotonic()
@@ -106,6 +108,7 @@ class TestGoogleScholarClient:
         elapsed = time.monotonic() - t0
         assert elapsed >= 0.01
 
+    @patch("researchclaw.web.scholar.HAS_SCHOLARLY", True)
     @patch("researchclaw.web.scholar.scholarly")
     def test_search_with_mocked_scholarly(self, mock_scholarly):
         """Test search using mocked scholarly library."""
@@ -125,6 +128,7 @@ class TestGoogleScholarClient:
         assert len(results) == 1
         assert results[0].title == "Test Paper"
 
+    @patch("researchclaw.web.scholar.HAS_SCHOLARLY", True)
     @patch("researchclaw.web.scholar.scholarly")
     def test_search_error_graceful(self, mock_scholarly):
         """Search should return empty list on error, not raise."""

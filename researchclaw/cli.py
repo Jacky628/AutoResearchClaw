@@ -118,14 +118,24 @@ def cmd_run(args: argparse.Namespace) -> int:
     # --- Determine start stage ---
     from_stage = Stage.TOPIC_INIT
     if from_stage_name:
-        from_stage = Stage[from_stage_name.upper()]
+        try:
+            from_stage = Stage[from_stage_name.upper()]
+        except KeyError:
+            valid = ", ".join(s.name for s in Stage)
+            print(
+                f"Error: unknown stage '{from_stage_name}'. "
+                f"Valid stages: {valid}",
+                file=sys.stderr,
+            )
+            return 1
     elif resume:
         resumed = read_checkpoint(run_dir)
         if resumed is not None:
             from_stage = resumed
             print(f"Resuming from checkpoint: Stage {int(from_stage)}: {from_stage.name}")
 
-    print(f"ResearchClaw v0.1.0 — Starting pipeline")
+    from researchclaw import __version__
+    print(f"ResearchClaw v{__version__} — Starting pipeline")
     print(f"  Run ID:  {run_id}")
     print(f"  Topic:   {config.research.topic}")
     print(f"  Output:  {run_dir}")

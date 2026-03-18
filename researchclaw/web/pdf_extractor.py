@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-import fitz  # PyMuPDF — installed dependency
+try:
+    import fitz  # PyMuPDF
+    HAS_FITZ = True
+except ImportError:
+    fitz = None  # type: ignore[assignment]
+    HAS_FITZ = False
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +77,17 @@ class PDFExtractor:
 
     def extract(self, path: str | Path) -> PDFContent:
         """Extract text from a local PDF file using PyMuPDF."""
+        if not HAS_FITZ:
+            return PDFContent(
+                path=str(path),
+                error="PyMuPDF not installed. Install: pip install 'researchclaw[pdf]'",
+            )
         path = Path(path)
-        if not path.exists():
+        try:
+            _exists = path.exists()
+        except (PermissionError, OSError):
+            _exists = False
+        if not _exists:
             return PDFContent(path=str(path), error=f"File not found: {path}")
 
         try:

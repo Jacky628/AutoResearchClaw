@@ -509,6 +509,11 @@ class RCConfig:
         config_path = Path(path).expanduser().resolve()
         with config_path.open(encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Config root must be a mapping, got {type(data).__name__}. "
+                f"Check that {config_path} is valid YAML."
+            )
         resolved_root = (
             Path(project_root).expanduser().resolve()
             if project_root

@@ -164,7 +164,10 @@ class WebSearchAgent:
         max_crawl_urls: int = 5,
     ) -> None:
         self.web_client = WebSearchClient(api_key=tavily_api_key)
-        self.scholar_client = GoogleScholarClient()
+        try:
+            self.scholar_client = GoogleScholarClient()
+        except ImportError:
+            self.scholar_client = None  # type: ignore[assignment]
         self.crawler = WebCrawler()
         self.pdf_extractor = PDFExtractor()
         self.enable_scholar = enable_scholar
@@ -206,7 +209,7 @@ class WebSearchAgent:
         self._run_web_search(result, search_queries)
 
         # 3. Google Scholar search
-        if self.enable_scholar and self.scholar_client.available:
+        if self.enable_scholar and self.scholar_client and self.scholar_client.available:
             self._run_scholar_search(result, topic)
 
         # 4. Crawl top URLs for full content

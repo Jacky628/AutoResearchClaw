@@ -17,7 +17,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from scholarly import scholarly, ProxyGenerator
+try:
+    from scholarly import scholarly, ProxyGenerator
+    HAS_SCHOLARLY = True
+except ImportError:
+    scholarly = None  # type: ignore[assignment]
+    ProxyGenerator = None  # type: ignore[assignment,misc]
+    HAS_SCHOLARLY = False
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +89,11 @@ class GoogleScholarClient:
         inter_request_delay: float = 2.0,
         use_proxy: bool = False,
     ) -> None:
+        if not HAS_SCHOLARLY:
+            raise ImportError(
+                "scholarly is required for Google Scholar search. "
+                "Install: pip install 'researchclaw[web]'"
+            )
         self.delay = inter_request_delay
         self._last_request_time: float = 0.0
 

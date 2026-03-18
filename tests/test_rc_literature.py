@@ -288,6 +288,7 @@ class TestArxiv:
         """Test search_arxiv with mocked arxiv library."""
         from unittest.mock import MagicMock
         from datetime import datetime
+        import types
 
         mock_result = MagicMock()
         mock_result.entry_id = "http://arxiv.org/abs/2401.00001v1"
@@ -303,6 +304,13 @@ class TestArxiv:
         mock_client = MagicMock()
         mock_client.results.return_value = iter([mock_result])
 
+        # Mock the module-level `arxiv` so the `if arxiv is None` guard
+        # doesn't short-circuit before the mocked _get_client is reached.
+        # Use MagicMock so all attributes (Search, SortOrder, etc.) auto-resolve.
+        _fake_arxiv = MagicMock()
+        monkeypatch.setattr(
+            "researchclaw.literature.arxiv_client.arxiv", _fake_arxiv,
+        )
         monkeypatch.setattr(
             "researchclaw.literature.arxiv_client._get_client",
             lambda: mock_client,
@@ -317,10 +325,30 @@ class TestArxiv:
 
     def test_search_arxiv_error_graceful(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """search_arxiv returns empty list on error, not raise."""
-        import arxiv as arxiv_mod
+        from unittest.mock import MagicMock
+        import types
+
+        # Build a fake arxiv module with real exception classes so
+        # `except arxiv.HTTPError` doesn't TypeError.
+        _fake_arxiv = types.ModuleType("arxiv")
+
+        class _FakeHTTPError(Exception):
+            pass
+
+        class _FakeUnexpectedEmptyPageError(Exception):
+            pass
+
+        _fake_arxiv.HTTPError = _FakeHTTPError
+        _fake_arxiv.UnexpectedEmptyPageError = _FakeUnexpectedEmptyPageError
+        _fake_arxiv.SortCriterion = MagicMock()
+        _fake_arxiv.SortOrder = MagicMock()
+        _fake_arxiv.Search = MagicMock()
+        monkeypatch.setattr(
+            "researchclaw.literature.arxiv_client.arxiv", _fake_arxiv,
+        )
 
         mock_client = MagicMock()
-        mock_client.results.side_effect = arxiv_mod.HTTPError("", 0, 429)
+        mock_client.results.side_effect = _FakeHTTPError("Simulated arXiv HTTP error")
 
         monkeypatch.setattr(
             "researchclaw.literature.arxiv_client._get_client",
@@ -589,15 +617,34 @@ class TestArxivCircuitBreaker:
 
     def test_search_with_http_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """search_arxiv should return empty list on HTTPError."""
-        import arxiv as arxiv_mod
+        import types
+
+        _fake_arxiv = types.ModuleType("arxiv")
+
+        class _FakeHTTPError(Exception):
+            pass
+
+        class _FakeUnexpectedEmptyPageError(Exception):
+            pass
+
+        _fake_arxiv.HTTPError = _FakeHTTPError
+        _fake_arxiv.UnexpectedEmptyPageError = _FakeUnexpectedEmptyPageError
+        _fake_arxiv.SortCriterion = MagicMock()
+        _fake_arxiv.SortOrder = MagicMock()
+        _fake_arxiv.Search = MagicMock()
+        monkeypatch.setattr(
+            "researchclaw.literature.arxiv_client.arxiv", _fake_arxiv,
+        )
 
         mock_client = MagicMock()
-        mock_client.results.side_effect = arxiv_mod.HTTPError("", 0, 429)
+        mock_client.results.side_effect = _FakeHTTPError("Simulated 429")
 
         monkeypatch.setattr(
             "researchclaw.literature.arxiv_client._get_client",
             lambda: mock_client,
         )
+        from researchclaw.literature.arxiv_client import _reset_circuit_breaker
+        _reset_circuit_breaker()
 
         papers = search_arxiv("test", limit=5)
         assert papers == []

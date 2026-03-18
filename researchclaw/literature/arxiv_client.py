@@ -22,7 +22,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-import arxiv  # pip install arxiv — real library, not hand-rolled
+try:
+    import arxiv  # pip install arxiv
+except ImportError:
+    arxiv = None  # type: ignore[assignment]
 
 from researchclaw.literature.models import Author, Paper
 
@@ -154,6 +157,9 @@ def search_arxiv(
     list[Paper]
         Parsed papers. Empty list on failure.
     """
+    if arxiv is None:
+        logger.warning("arxiv library not installed — skipping arXiv search")
+        return []
     if not _cb_should_allow():
         logger.info("[rate-limit] arXiv circuit breaker OPEN — skipping")
         return []
@@ -199,6 +205,9 @@ def search_arxiv(
 
 def get_paper_by_id(arxiv_id: str) -> Paper | None:
     """Fetch a single paper by arXiv ID (e.g., '2301.00001')."""
+    if arxiv is None:
+        logger.warning("arxiv library not installed — cannot look up %s", arxiv_id)
+        return None
     try:
         search = arxiv.Search(id_list=[arxiv_id])
         client = _get_client()
@@ -230,6 +239,9 @@ def download_pdf(
     Path | None
         Path to downloaded PDF, or None on failure.
     """
+    if arxiv is None:
+        logger.warning("arxiv library not installed — cannot download PDF")
+        return None
     try:
         search = arxiv.Search(id_list=[arxiv_id])
         client = _get_client()
