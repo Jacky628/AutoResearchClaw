@@ -334,7 +334,25 @@ class LLMClient:
                 body["max_tokens"] = max_tokens
 
             if json_mode:
-                body["response_format"] = {"type": "json_object"}
+                # Many OpenAI-compatible proxies serving Claude models don't
+                # support the response_format parameter and return HTTP 400.
+                # Fall back to a system-prompt injection for non-OpenAI models.
+                if model.startswith("claude"):
+                    _json_hint = (
+                        "You MUST respond with valid JSON only. "
+                        "Do not include any text outside the JSON object."
+                    )
+                    # Prepend to existing system message or add as new one
+                    if body["messages"] and body["messages"][0]["role"] == "system":
+                        body["messages"][0]["content"] = (
+                            _json_hint + "\n\n" + body["messages"][0]["content"]
+                        )
+                    else:
+                        body["messages"].insert(
+                            0, {"role": "system", "content": _json_hint}
+                        )
+                else:
+                    body["response_format"] = {"type": "json_object"}
 
             payload = json.dumps(body).encode("utf-8")
             url = f"{self.config.base_url.rstrip('/')}/chat/completions"
