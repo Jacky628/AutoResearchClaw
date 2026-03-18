@@ -120,24 +120,31 @@ class BaseAgent:
 
     @staticmethod
     def _parse_json(text: str) -> dict[str, Any] | None:
-        """Try to extract JSON from text using three strategies."""
+        """Try to extract JSON from text using three strategies.
+
+        Always returns a ``dict`` or ``None`` — lists and other JSON
+        primitives are discarded so callers can safely use ``.get()``.
+        """
+        def _as_dict(val: Any) -> dict[str, Any] | None:
+            return val if isinstance(val, dict) else None
+
         # 1. Direct parse
         try:
-            return json.loads(text)
+            return _as_dict(json.loads(text))
         except (json.JSONDecodeError, ValueError):
             pass
         # 2. Fenced code block
         m = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
         if m:
             try:
-                return json.loads(m.group(1))
+                return _as_dict(json.loads(m.group(1)))
             except (json.JSONDecodeError, ValueError):
                 pass
         # 3. First { ... } block
         m = re.search(r"\{[\s\S]*\}", text)
         if m:
             try:
-                return json.loads(m.group(0))
+                return _as_dict(json.loads(m.group(0)))
             except (json.JSONDecodeError, ValueError):
                 pass
         return None

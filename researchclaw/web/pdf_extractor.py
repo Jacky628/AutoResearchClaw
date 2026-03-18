@@ -132,6 +132,17 @@ class PDFExtractor:
 
     def extract_from_url(self, url: str) -> PDFContent:
         """Download a PDF from URL and extract text."""
+        # Validate URL scheme to prevent SSRF (file://, internal IPs, etc.)
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return PDFContent(path=url, error=f"Unsupported URL scheme: {parsed.scheme}")
+        # Block private/internal IPs
+        hostname = parsed.hostname or ""
+        if hostname in ("localhost", "127.0.0.1", "0.0.0.0") or hostname.startswith("169.254."):
+            return PDFContent(path=url, error=f"Blocked internal URL: {hostname}")
+
+        tmp_path = None
         try:
             req = Request(url, headers={
                 "User-Agent": "ResearchClaw/0.5 (Academic Research Bot)"
@@ -145,11 +156,13 @@ class PDFExtractor:
 
             result = self.extract(tmp_path)
             result.path = url
-            Path(tmp_path).unlink(missing_ok=True)
             return result
         except Exception as exc:  # noqa: BLE001
             logger.warning("PDF download failed for %s: %s", url, exc)
             return PDFContent(path=url, error=str(exc))
+        finally:
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     # Section detection

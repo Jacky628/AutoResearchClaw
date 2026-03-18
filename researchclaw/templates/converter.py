@@ -134,12 +134,24 @@ def _sanitize_latex_output(tex: str) -> str:
     tex = re.sub(r"\[\?[a-zA-Z0-9_:-]+:NOT_IN_BIB\]", "", tex)
 
     # 1b. Convert leftover raw bracket citations [key2019word, key2020word] → \cite{...}
+    # Skip inside verbatim/lstlisting environments to avoid corrupting code blocks.
     _CITE_KEY_PAT_L = r"[a-zA-Z][a-zA-Z0-9_-]*\d{4}[a-zA-Z0-9_]*"
-    tex = re.sub(
-        rf"\[({_CITE_KEY_PAT_L}(?:\s*,\s*{_CITE_KEY_PAT_L})*)\]",
-        r"\\cite{\1}",
-        tex,
+    _VERBATIM_RE = re.compile(
+        r"(\\begin\{(?:verbatim|lstlisting|minted)\}.*?\\end\{(?:verbatim|lstlisting|minted)\})",
+        re.DOTALL,
     )
+    _cite_re = re.compile(
+        rf"\[({_CITE_KEY_PAT_L}(?:\s*,\s*{_CITE_KEY_PAT_L})*)\]"
+    )
+
+    def _cite_outside_verbatim(tex_src: str) -> str:
+        parts = _VERBATIM_RE.split(tex_src)
+        for i, part in enumerate(parts):
+            if not _VERBATIM_RE.match(part):
+                parts[i] = _cite_re.sub(r"\\cite{\1}", part)
+        return "".join(parts)
+
+    tex = _cite_outside_verbatim(tex)
 
     # 2. Remove HTML entities that survived pre-processing
     tex = tex.replace("&nbsp;", "~")
@@ -222,13 +234,27 @@ _RAW_METRIC_RE = re.compile(r"(\d+\.\d{5,})")
 
 
 def _round_raw_metrics(text: str) -> str:
-    """Round excessively precise metric values (>4 decimal places) to 4."""
+    """Round excessively precise metric values (>4 decimal places).
+
+    Uses significant-figure-aware rounding so small values like
+    learning rates (e.g. 0.00001) are preserved instead of becoming 0.0000.
+    """
     def _rounder(m: re.Match[str]) -> str:
         try:
             val = float(m.group(1))
-            # Keep 4 significant decimal places
+            if val == 0.0:
+                return "0.0"
+            # For very small values (< 0.001), use 2 significant figures
+            # to preserve scientific meaning (e.g. lr=0.00003 → 0.00003)
+            import math
+            abs_val = abs(val)
+            if abs_val < 0.001:
+                sig_figs = 2
+                digits = sig_figs - int(math.floor(math.log10(abs_val))) - 1
+                return f"{val:.{digits}f}"
+            # Normal range: 4 decimal places
             return f"{val:.4f}"
-        except ValueError:
+        except (ValueError, OverflowError):
             return m.group(0)
     return _RAW_METRIC_RE.sub(_rounder, text)
 
@@ -1279,6 +1305,18 @@ def _convert_inline(text: str) -> str:
     # Protect \(...\) patterns with linebreaks already handled
     # (should be caught above, but safety net)
 
+    # Convert markdown links BEFORE escaping so URLs with _ are preserved.
+    # Protect images first so they don't get matched as links.
+    text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _protect, text)
+
+    def _convert_and_protect_link(m: re.Match[str]) -> str:
+        href = f"\\href{{{m.group(2)}}}{{{m.group(1)}}}"
+        idx = len(protected)
+        protected.append(href)
+        return f"\x00PROT{idx}\x00"
+
+    text = _LINK_RE.sub(_convert_and_protect_link, text)
+
     # Escape special LaTeX characters
     text = _LATEX_SPECIAL.sub(r"\\\1", text)
     text = _LATEX_TILDE.sub(r"\\textasciitilde{}", text)
@@ -1294,12 +1332,7 @@ def _convert_inline(text: str) -> str:
     # Convert inline code `text` → \texttt{text}
     text = _INLINE_CODE_RE.sub(r"\\texttt{\1}", text)
 
-    # Protect markdown images ![caption](path) from link conversion
-    # They will be restored as-is (block-level handles full figure rendering)
-    text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _protect, text)
-
-    # Convert links [text](url) → \href{url}{text}
-    text = _LINK_RE.sub(r"\\href{\2}{\1}", text)
+    # Links and images were already converted+protected before escaping.
 
     # Fallback: convert any remaining [cite_key] patterns to \cite{key}
     # This catches citations that were not converted upstream.

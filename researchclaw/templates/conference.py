@@ -154,7 +154,7 @@ NEURIPS_2024 = ConferenceTemplate(
     bib_style="plainnat",
     columns=1,
     style_download_url="https://media.neurips.cc/Conferences/NeurIPS2024/Styles.zip",
-    preamble_extra="\\usepackage[utf8]{inputenc}\n\\usepackage[T1]{fontenc}",
+    preamble_extra="\\usepackage[utf8]{inputenc}\n\\usepackage[T1]{fontenc}\n\\usepackage{lmodern}",
 )
 
 ICLR_2025 = ConferenceTemplate(
@@ -239,7 +239,7 @@ NEURIPS_2025 = ConferenceTemplate(
     bib_style="plainnat",
     columns=1,
     style_download_url="https://media.neurips.cc/Conferences/NeurIPS2025/Styles.zip",
-    preamble_extra="\\usepackage[utf8]{inputenc}\n\\usepackage[T1]{fontenc}",
+    preamble_extra="\\usepackage[utf8]{inputenc}\n\\usepackage[T1]{fontenc}\n\\usepackage{lmodern}",
 )
 
 ICLR_2026 = ConferenceTemplate(
@@ -321,7 +321,7 @@ GENERIC = ConferenceTemplate(
     bib_style="plainnat",
     columns=1,
     style_download_url="",
-    preamble_extra="\\usepackage[utf8]{inputenc}\n\\usepackage[T1]{fontenc}\n\\usepackage[margin=1in]{geometry}",
+    preamble_extra="\\usepackage[utf8]{inputenc}\n\\usepackage[T1]{fontenc}\n\\usepackage{lmodern}\n\\usepackage[margin=1in]{geometry}",
 )
 
 

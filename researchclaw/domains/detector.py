@@ -326,26 +326,34 @@ Context: {context}
 Respond with ONLY the domain_id (e.g., "ml_vision"). Nothing else."""
 
 
-async def _llm_detect(
+def _llm_detect(
     topic: str, context: str, llm: Any,
 ) -> str | None:
-    """Use LLM to classify a research topic into a domain."""
+    """Use LLM to classify a research topic into a domain.
+
+    Synchronous — ``llm.chat()`` is a blocking call.
+    """
     try:
         prompt = _LLM_CLASSIFY_PROMPT.format(topic=topic, context=context)
-        response = await llm.chat(
+        response = llm.chat(
+            [{"role": "user", "content": prompt}],
             system="You are a precise domain classifier.",
-            user=prompt,
             max_tokens=50,
         )
-        domain_id = response.content.strip().strip('"').strip("'").lower()
+        content = getattr(response, "content", None)
+        if not content or not content.strip():
+            logger.warning("LLM domain detection returned empty response")
+            return None
+        domain_id = content.strip().strip('"').strip("'").lower()
         # Validate it's a known domain
         profiles = load_all_profiles()
         if domain_id in profiles or domain_id == "generic":
             return domain_id
-        # Try fuzzy match
-        for pid in profiles:
-            if pid in domain_id or domain_id in pid:
-                return pid
+        # Try fuzzy match (require at least 4 chars to avoid over-matching)
+        if len(domain_id) >= 4:
+            for pid in profiles:
+                if pid in domain_id or domain_id in pid:
+                    return pid
         logger.warning("LLM returned unknown domain: %s", domain_id)
         return None
     except Exception:
@@ -404,11 +412,17 @@ def detect_domain(
             domain_id,
         )
 
-    # Level 2: LLM classification (sync wrapper — detect_domain is called from sync code)
-    # Note: LLM detection is async; if needed, caller should use detect_domain_async
-    # For now we skip LLM in sync path and go straight to fallback
+    # Level 2: LLM classification
     if llm is not None:
-        logger.info("Topic did not match keywords; LLM classification available but skipped in sync path")
+        domain_id = _llm_detect(combined_text, f"hypotheses: {hypotheses}", llm)
+        if domain_id:
+            profile = get_profile(domain_id)
+            if profile:
+                logger.info(
+                    "Domain detected via LLM: %s (%s)",
+                    profile.display_name, domain_id,
+                )
+                return profile
 
     # Level 3: Fallback to generic
     logger.info("Using generic domain profile for topic: %.80s", topic)
@@ -437,7 +451,7 @@ async def detect_domain_async(
 
     # Level 2: LLM classification
     if llm is not None:
-        domain_id = await _llm_detect(topic, combined_text, llm)
+        domain_id = _llm_detect(topic, combined_text, llm)
         if domain_id:
             profile = get_profile(domain_id)
             if profile:

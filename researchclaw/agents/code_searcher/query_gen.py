@@ -129,28 +129,14 @@ def _llm_generate(
             needs=", ".join(needs) if needs else "general usage",
         )
 
-        # Synchronous LLM call
-        if hasattr(llm, "chat_sync"):
-            resp = llm.chat_sync(
+        # Synchronous LLM call — LLMClient.chat() is sync and takes
+        # (messages, *, system=, max_tokens=) signature.
+        if hasattr(llm, "chat"):
+            resp = llm.chat(
+                [{"role": "user", "content": prompt}],
                 system="You generate concise GitHub search queries.",
-                user=prompt,
                 max_tokens=200,
             )
-        elif hasattr(llm, "chat"):
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop and loop.is_running():
-                # Already in async context — use heuristic fallback
-                logger.debug("In async context, using heuristic query gen")
-                return _heuristic_generate(topic, domain_name, libraries, needs)
-            resp = asyncio.run(llm.chat(
-                system="You generate concise GitHub search queries.",
-                user=prompt,
-                max_tokens=200,
-            ))
         else:
             return _heuristic_generate(topic, domain_name, libraries, needs)
 

@@ -238,9 +238,9 @@ class OpenCodeConfig:
     Requires: npm i -g opencode-ai@latest
     """
 
-    enabled: bool = False
-    auto: bool = False  # Auto-trigger without user confirmation
-    complexity_threshold: float = 0.6  # 0.0-1.0
+    enabled: bool = True
+    auto: bool = True  # Auto-trigger without user confirmation
+    complexity_threshold: float = 0.2  # 0.0-1.0
     model: str = ""  # Empty = use llm.primary_model
     timeout_sec: int = 600  # Max seconds for opencode run
     max_retries: int = 1
@@ -742,9 +742,9 @@ def _parse_opencode_config(data: dict[str, Any]) -> OpenCodeConfig:
     if not data:
         return OpenCodeConfig()
     return OpenCodeConfig(
-        enabled=bool(data.get("enabled", False)),
-        auto=bool(data.get("auto", False)),
-        complexity_threshold=float(data.get("complexity_threshold", 0.6)),
+        enabled=bool(data.get("enabled", True)),
+        auto=bool(data.get("auto", True)),
+        complexity_threshold=float(data.get("complexity_threshold", 0.2)),
         model=str(data.get("model", "")),
         timeout_sec=int(data.get("timeout_sec", 600)),
         max_retries=int(data.get("max_retries", 1)),

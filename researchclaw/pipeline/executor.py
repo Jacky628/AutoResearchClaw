@@ -3502,6 +3502,9 @@ def _execute_code_generation(
     all_valid = True
     attempt = 0
     for fname, code in list(files.items()):
+        # Skip non-Python files (requirements.txt, setup.py, etc.)
+        if not fname.endswith(".py"):
+            continue
         validation = validate_code(code)
         repair_attempt = 0
         while not validation.ok and llm is not None and repair_attempt < max_repair:
@@ -3710,7 +3713,7 @@ def _execute_code_generation(
     if complexity_warnings:
         health: dict[str, Any] = {}
         health["code_complexity_warnings"] = complexity_warnings
-        (stage_dir / "stage_health.json").write_text(
+        (stage_dir / "code_complexity.json").write_text(
             json.dumps(health, indent=2), encoding="utf-8"
         )
 
@@ -3964,8 +3967,8 @@ def _execute_code_generation(
                         )
                 except Exception as exc:
                     logger.debug("Ablation repair failed: %s", exc)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Ablation validation skipped: %s", exc)
 
     # --- Write spec ---
     file_list = ", ".join(f"`{f}`" for f in sorted(files.keys()))
@@ -5299,6 +5302,29 @@ def _execute_result_analysis(
                     )
                     _ablation_warnings.append(_warn)
                     logger.warning("P8: %s", _warn)
+                elif _shared_keys:
+                    # R5-BUG-03: Also flag near-identical conditions (< 1% relative diff)
+                    _near_identical = True
+                    for _sk in _shared_keys:
+                        _v1 = _s1[_sk].get("mean") if isinstance(_s1[_sk], dict) else _s1[_sk]
+                        _v2 = _s2[_sk].get("mean") if isinstance(_s2[_sk], dict) else _s2[_sk]
+                        try:
+                            _v1f, _v2f = float(_v1), float(_v2)
+                            _denom = max(abs(_v1f), abs(_v2f), 1e-12)
+                            if abs(_v1f - _v2f) / _denom > 0.01:
+                                _near_identical = False
+                                break
+                        except (TypeError, ValueError):
+                            _near_identical = False
+                            break
+                    if _near_identical:
+                        _warn = (
+                            f"ABLATION WARNING: Conditions '{_c1}' and '{_c2}' produce "
+                            f"near-identical outputs (<1% relative difference) across "
+                            f"all {len(_shared_keys)} metrics. The ablation may be trivial."
+                        )
+                        _ablation_warnings.append(_warn)
+                        logger.warning("P8: %s", _warn)
 
     # --- Write structured experiment summary ---
     summary_payload = {
@@ -6947,7 +6973,12 @@ def _execute_paper_draft(
                     pv = pc.get("p_value", "?")
                     ci_lo = pc.get("ci95_low")
                     ci_hi = pc.get("ci95_high")
-                    ci_str = f", 95% CI [{ci_lo:.3f}, {ci_hi:.3f}]" if ci_lo is not None else ""
+                    ci_str = ""
+                    if ci_lo is not None and ci_hi is not None:
+                        try:
+                            ci_str = f", 95% CI [{float(ci_lo):.3f}, {float(ci_hi):.3f}]"
+                        except (ValueError, TypeError):
+                            ci_str = f", 95% CI [{ci_lo}, {ci_hi}]"
                     paired_block += (
                         f"- {method} vs {baseline} (regime={regime}): "
                         f"mean_diff={md}, std_diff={sd}, "
@@ -7180,8 +7211,11 @@ def _execute_paper_draft(
                 f"Analysis rated experiment quality {_analysis_rating}/10"
             )
         # BUG-23: If quality rating is ≤ 2, force has_real_metrics = False
-        # to prevent fabricated results even if stdout had stray numbers
-        if _analysis_rating <= 2 and has_real_metrics:
+        # to prevent fabricated results even if stdout had stray numbers.
+        # R5-BUG-05: Skip override when _has_parsed_metrics is True — the
+        # analysis.md may be stale (from pre-refinement Stage 14) while
+        # Stage 13 refinement produced real parsed metrics.
+        if _analysis_rating <= 2 and has_real_metrics and not _has_parsed_metrics:
             logger.warning(
                 "BUG-23 guard: Analysis quality %d/10 ≤ 2 — "
                 "overriding has_real_metrics to False (experiment likely failed)",
@@ -8554,6 +8588,7 @@ def _execute_export_publish(
                 )
                 artifacts.append("invalid_citations.json")
 
+        final_paper_latex = final_paper  # default: no citation conversion
         if valid_keys:
             _CITE_KEY_PAT = r"[a-zA-Z][a-zA-Z0-9_-]*\d{4}[a-zA-Z0-9]*"
 
@@ -8608,7 +8643,7 @@ def _execute_export_publish(
             # \cite{key, key2} format (original + latex-converted)
             for _src in (
                 final_paper,
-                locals().get("final_paper_latex", ""),
+                final_paper_latex,
             ):
                 for _cm in _re.finditer(r"\\cite\{([^}]+)\}", _src):
                     _all_cited.update(
@@ -8638,7 +8673,7 @@ def _execute_export_publish(
 
         tpl = get_template(config.export.target_conference)
         # Use the latex-citation-processed version if available
-        tex_source = locals().get("final_paper_latex", final_paper)
+        tex_source = final_paper_latex
         # Append NeurIPS-style checklist if target is a ML conference
         if tpl.name in ("neurips_2024", "neurips_2025", "icml_2025", "icml_2026",
                          "iclr_2025", "iclr_2026"):
@@ -9021,7 +9056,8 @@ def _remove_bibtex_entries(bib_text: str, keys_to_remove: set[str]) -> str:
                 if depth == 0:
                     end = i + 1
                     break
-        kept.append(bib_text[start:end])
+        if end > start:
+            kept.append(bib_text[start:end])
     return "\n\n".join(kept) + "\n" if kept else ""
 
 
@@ -9079,7 +9115,9 @@ def _execute_citation_verify(
         (stage_dir / "verification_report.json").write_text(
             json.dumps(report_data, indent=2), encoding="utf-8"
         )
-        (stage_dir / "references_verified.bib").write_text("", encoding="utf-8")
+        (stage_dir / "references_verified.bib").write_text(
+            "% No references to verify\n", encoding="utf-8"
+        )
         return StageResult(
             stage=Stage.CITATION_VERIFY,
             status=StageStatus.DONE,

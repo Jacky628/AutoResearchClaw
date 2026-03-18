@@ -235,6 +235,17 @@ class LLMClient:
         except (urllib.error.URLError, OSError) as e:
             return False, f"Connection failed: {e}"
         except RuntimeError as e:
+            # chat() wraps errors in RuntimeError; extract original HTTPError
+            cause = e.__cause__
+            if isinstance(cause, urllib.error.HTTPError):
+                status_map = {
+                    401: "Invalid API key",
+                    403: f"Model {self.config.primary_model} not allowed for this key",
+                    404: f"Endpoint not found: {self.config.base_url}",
+                    429: "Rate limited - try again in a moment",
+                }
+                msg = status_map.get(cause.code, f"HTTP {cause.code}")
+                return False, msg
             return False, f"All models failed: {e}"
 
     def _call_with_retry(
@@ -407,8 +418,10 @@ class LLMClient:
             error_info = data["error"]
             error_msg = error_info.get("message", str(error_info))
             error_type = error_info.get("type", "api_error")
+            import io
             raise urllib.error.HTTPError(
-                "", 500, f"{error_type}: {error_msg}", {}, None
+                "", 500, f"{error_type}: {error_msg}", {},
+                io.BytesIO(error_msg.encode()),
             )
 
         # Validate response structure

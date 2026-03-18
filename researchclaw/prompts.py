@@ -1081,6 +1081,8 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "## All Project Files\n{all_files_ctx}\n\n"
             "IMPORTANT: Do NOT use subprocess, os.system, eval, exec, or any "
             "network/shell calls.\n"
+            "NUMPY 2.x: np.trapz→np.trapezoid, np.erfinv→scipy.special.erfinv, "
+            "np.bool/int/float→Python builtins.\n"
             "Return ONLY the corrected code for `{fname}`."
         ),
     },
@@ -1094,7 +1096,9 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "Return the improved files using ```filename:xxx.py format for each file.\n"
             "Primary metric key: {metric_key}\n"
             "Metric direction: {metric_direction}\n"
-            "Do not use subprocess, os.system, eval, exec, or any network/shell calls.\n\n"
+            "Do not use subprocess, os.system, eval, exec, or any network/shell calls.\n"
+            "NUMPY 2.x: np.trapz→np.trapezoid, np.erfinv→scipy.special.erfinv, "
+            "np.bool/int/float→Python builtins, np.math→math.\n\n"
             "EXPERIMENT PLAN ANCHOR (CRITICAL — read before making changes):\n"
             "The research topic is: {topic}\n"
             "{exp_plan_anchor}"
@@ -1123,7 +1127,9 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "- Lower learning rate to 1e-4 or 3e-4\n"
             "- Add reward normalization/clipping: `reward = np.clip(reward, -10, 10)`\n"
             "- Add NaN guard: `if torch.isnan(loss): continue`\n"
-            "- Use float32 (not float16) for RL value functions\n\n"
+            "- Use float32 (not float16) for RL value functions\n"
+            "- NUMPY 2.x: np.trapz→np.trapezoid, np.erfinv→scipy.special.erfinv, "
+            "np.bool/int/float→Python builtins\n\n"
             "## All Project Files\n{all_files_ctx}"
         ),
     },
@@ -1137,7 +1143,13 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "separation of concerns: data loading, model definition, training "
             "loop, and evaluation are distinct components. You understand ML "
             "training deeply and design for correctness: proper .detach(), "
-            "consistent tensor shapes, and correct gradient flow."
+            "consistent tensor shapes, and correct gradient flow.\n\n"
+            "NUMPY 2.x COMPATIBILITY (CRITICAL):\n"
+            "- np.trapz is REMOVED → use np.trapezoid\n"
+            "- np.erfinv does NOT exist → use scipy.special.erfinv\n"
+            "- np.bool, np.int, np.float, np.complex are REMOVED → use Python builtins\n"
+            "- np.str, np.object are REMOVED → use str, object\n"
+            "- np.math is REMOVED → use math module"
         ),
         "user": (
             "Create a detailed IMPLEMENTATION BLUEPRINT for an experiment codebase.\n\n"
@@ -1316,7 +1328,10 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "10. NO CLI CONDITION ARGS: If this is main.py, NEVER add argparse "
             "arguments like --condition or --method. All conditions must be "
             "iterated inside main.py with a for-loop. The harness runs "
-            "`python main.py` with no arguments.\n\n"
+            "`python main.py` with no arguments.\n"
+            "11. NUMPY 2.x COMPATIBILITY: np.trapz→np.trapezoid, "
+            "np.erfinv→scipy.special.erfinv, np.bool/np.int/np.float→Python builtins, "
+            "np.str/np.object→str/object, np.math→math.\n\n"
             "Output ONLY the Python code for `{file_name}` — no markdown fences, "
             "no explanations, just the code."
         ),
@@ -1346,7 +1361,9 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "6. COMMON BUG: If error is about `train()` missing arguments, it means "
             "a class overrode nn.Module.train() with a custom signature. Fix by "
             "renaming the custom method to `fit()` or `run_training()` and updating "
-            "all callers. Never override nn.Module.train/eval with extra args.\n\n"
+            "all callers. Never override nn.Module.train/eval with extra args.\n"
+            "7. NUMPY 2.x: np.trapz→np.trapezoid, np.erfinv→scipy.special.erfinv, "
+            "np.bool/int/float/complex→Python builtins, np.str/object→str/object.\n\n"
             "Output ALL files in ```filename:xxx.py``` format, including files "
             "that don't need changes."
         ),

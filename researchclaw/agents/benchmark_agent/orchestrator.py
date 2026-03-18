@@ -116,7 +116,7 @@ class BenchmarkPlan:
                 role = b.get("role", "secondary")
                 metrics = b.get("metrics", [])
                 parts.append(
-                    f"- **{b['name']}** ({role}) — "
+                    f"- **{b.get('name', 'Unknown')}** ({role}) — "
                     f"metrics: {', '.join(str(m) for m in metrics)}"
                 )
                 if b.get("api"):
@@ -129,7 +129,7 @@ class BenchmarkPlan:
             parts.append("\n## Selected Baselines")
             for bl in self.selected_baselines:
                 parts.append(
-                    f"- **{bl['name']}**: {bl.get('paper', 'N/A')}"
+                    f"- **{bl.get('name', 'Unknown')}**: {bl.get('paper', 'N/A')}"
                 )
                 if bl.get("source"):
                     parts.append(f"  Code: `{bl['source']}`")

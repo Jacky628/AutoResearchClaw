@@ -12,6 +12,7 @@ Usage::
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -60,7 +61,7 @@ class ScholarPaper:
         from researchclaw.literature.models import Author, Paper
         authors_tuple = tuple(Author(name=a) for a in self.authors)
         return Paper(
-            paper_id=self.scholar_id or f"gs-{hash(self.title) % 10**8}",
+            paper_id=self.scholar_id or f"gs-{hashlib.sha256(self.title.encode()).hexdigest()[:8]}",
             title=self.title,
             authors=authors_tuple,
             year=self.year,

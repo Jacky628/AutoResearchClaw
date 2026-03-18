@@ -144,13 +144,7 @@ def _llm_extract(
             code_snippets=combined,
         )
 
-        if hasattr(llm, "chat_sync"):
-            resp = llm.chat_sync(
-                system="You extract code patterns as JSON.",
-                user=prompt,
-                max_tokens=1500,
-            )
-        elif hasattr(llm, "chat"):
+        if hasattr(llm, "chat"):
             import asyncio
             try:
                 loop = asyncio.get_running_loop()
@@ -158,18 +152,18 @@ def _llm_extract(
                 loop = None
             if loop and loop.is_running():
                 return _heuristic_extract(snippets)
-            resp = asyncio.run(llm.chat(
+            resp = llm.chat(
+                [{"role": "user", "content": prompt}],
                 system="You extract code patterns as JSON.",
-                user=prompt,
                 max_tokens=1500,
-            ))
+            )
         else:
             return _heuristic_extract(snippets)
 
         content = resp.content if hasattr(resp, "content") else str(resp)
 
         # Parse JSON from response
-        json_match = re.search(r"\{.*\}", content, re.DOTALL)
+        json_match = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", content, re.DOTALL)
         if json_match:
             data = json.loads(json_match.group())
             return CodePatterns(

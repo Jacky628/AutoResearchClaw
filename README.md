@@ -18,7 +18,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/Tests-1608%20passed-brightgreen?logo=pytest&logoColor=white" alt="1284 Tests Passed"></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/Tests-1634%20passed-brightgreen?logo=pytest&logoColor=white" alt="1633 Tests Passed"></a>
   <a href="https://github.com/aiming-lab/AutoResearchClaw"><img src="https://img.shields.io/badge/GitHub-AutoResearchClaw-181717?logo=github" alt="GitHub"></a>
   <a href="#openclaw-integration"><img src="https://img.shields.io/badge/OpenClaw-Compatible-ff4444?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==" alt="OpenClaw Compatible"></a>
   <a href="https://discord.gg/u4ksqW5P"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
@@ -57,7 +57,7 @@
 ## ⚡ One Command. One Paper.
 
 ```bash
-pip install -e . && researchclaw run --topic "Your research idea here" --auto-approve
+pip install -e . && researchclaw setup && researchclaw init && researchclaw run --topic "Your research idea here" --auto-approve
 ```
 
 
@@ -94,11 +94,14 @@ cd AutoResearchClaw
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 
-# 2. Configure
-cp config.researchclaw.example.yaml config.arc.yaml
-# Edit config.arc.yaml — set your LLM API endpoint and key
+# 2. Setup (interactive — installs OpenCode beast mode, checks Docker/LaTeX)
+researchclaw setup
 
-# 3. Run
+# 3. Configure
+researchclaw init          # Interactive: choose LLM provider, creates config.arc.yaml
+# Or manually: cp config.researchclaw.example.yaml config.arc.yaml
+
+# 4. Run
 export OPENAI_API_KEY="sk-..."
 researchclaw run --config config.arc.yaml --topic "Your research idea" --auto-approve
 ```
@@ -226,7 +229,7 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 
 | Method | How |
 |--------|-----|
-| **Standalone CLI** | `researchclaw run --topic "..." --auto-approve` |
+| **Standalone CLI** | `researchclaw setup` → `researchclaw init` → `researchclaw run --topic "..." --auto-approve` |
 | **Python API** | `from researchclaw.pipeline import Runner; Runner(config).run()` |
 | **Claude Code** | Reads `RESEARCHCLAW_CLAUDE.md` — just say *"Run research on [topic]"* |
 | **OpenCode** | Reads `.claude/skills/` — same natural language interface |
@@ -288,6 +291,7 @@ Phase D: Experiment Design         Phase H: Finalization
 | **📚 Multi-Source Literature** | Real papers from OpenAlex, Semantic Scholar & arXiv — query expansion, deduplication, circuit breaker with graceful degradation |
 | **🔍 4-Layer Citation Verification** | arXiv ID check → CrossRef/DataCite DOI → Semantic Scholar title match → LLM relevance scoring. Hallucinated refs auto-removed. |
 | **🖥️ Hardware-Aware Execution** | Auto-detects GPU (NVIDIA CUDA / Apple MPS / CPU-only) and adapts code generation, imports, and experiment scale accordingly |
+| **🦾 OpenCode Beast Mode** | Complex experiments auto-routed to [OpenCode](https://github.com/anomalyco/opencode) — generates multi-file projects with custom architectures, training loops, and ablation studies. Install via `researchclaw setup`. |
 | **🧪 Sandbox Experiments** | AST-validated code, immutable harness, NaN/Inf fast-fail, self-healing repair, iterative refinement (up to 10 rounds), partial result capture |
 | **📝 Conference-Grade Writing** | NeurIPS/ICML/ICLR templates, section-by-section drafting (5,000-6,500 words), anti-fabrication guard, revision length guard, anti-disclaimer enforcement |
 | **📐 Template Switching** | `neurips_2025`, `iclr_2026`, `icml_2026` — Markdown → LaTeX with math, tables, figures, cross-refs, `\cite{}` |
@@ -328,14 +332,14 @@ pip install metaclaw
 # config.arc.yaml
 metaclaw_bridge:
   enabled: true
-  proxy_url: "http://localhost:30000/v1"    # MetaClaw proxy (optional)
+  proxy_url: "http://localhost:30000"        # MetaClaw proxy (optional)
   skills_dir: "~/.metaclaw/skills"          # Where skills are stored
   fallback_url: "https://api.openai.com/v1" # Direct LLM fallback
-  fallback_api_key_env: "OPENAI_API_KEY"
+  fallback_api_key: ""                      # API key for fallback URL
   lesson_to_skill:
     enabled: true
     min_severity: "warning"                 # Convert warnings + errors
-    max_skills_per_run: 5
+    max_skills_per_run: 3
 ```
 
 ```bash
@@ -362,7 +366,7 @@ In controlled A/B experiments (same topic, same LLM, same configuration):
 
 - **Default: OFF.** If `metaclaw_bridge` is absent or `enabled: false`, the pipeline behaves exactly as before.
 - **No new dependencies.** MetaClaw is optional — the core pipeline works without it.
-- **All 1,284 existing tests pass** with the integration code present.
+- **All 1,634 existing tests pass** with the integration code present.
 
 ---
 
@@ -426,6 +430,14 @@ experiment:
     host: ""                       # GPU server hostname
     gpu_ids: []                    # Available GPU IDs
     remote_workdir: "/tmp/researchclaw_experiments"
+  opencode:                          # OpenCode Beast Mode (auto-installed via `researchclaw setup`)
+    enabled: true                    # Master switch (default: true)
+    auto: true                       # Auto-trigger without confirmation (default: true)
+    complexity_threshold: 0.2        # 0.0-1.0 — higher = only trigger on complex experiments
+    model: ""                        # Override model (empty = use llm.primary_model)
+    timeout_sec: 600                 # Max seconds for OpenCode generation
+    max_retries: 1                   # Retry count on failure
+    workspace_cleanup: true          # Remove temp workspace after collection
 
 # === Export ===
 export:
@@ -456,14 +468,14 @@ notifications:
 # === MetaClaw Bridge (Optional) ===
 metaclaw_bridge:
   enabled: false                   # Set to true to enable cross-run learning
-  proxy_url: "http://localhost:30000/v1"  # MetaClaw proxy URL
+  proxy_url: "http://localhost:30000"  # MetaClaw proxy URL
   skills_dir: "~/.metaclaw/skills" # Where arc-* skills are stored
   fallback_url: ""                 # Direct LLM fallback when proxy is down
   fallback_api_key: ""             # API key for fallback endpoint
   lesson_to_skill:
     enabled: true                  # Auto-convert lessons to skills
     min_severity: "warning"        # Minimum severity to convert
-    max_skills_per_run: 5          # Max new skills per pipeline run
+    max_skills_per_run: 3          # Max new skills per pipeline run
 
 # === OpenClaw Bridge ===
 openclaw_bridge:

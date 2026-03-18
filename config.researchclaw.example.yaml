@@ -70,7 +70,7 @@ experiment:
     gpu_enabled: true
     # gpu_device_ids: [0]        # empty = all GPUs
     memory_limit_mb: 8192
-    network_policy: "none"       # none | pip_only | full
+    network_policy: "setup_only"  # none | setup_only | pip_only | full
     # pip_pre_install: ["torchdiffeq", "einops"]
     auto_install_deps: true
     shm_size_mb: 2048
@@ -90,6 +90,16 @@ experiment:
     docker_network_policy: "none"   # none | full
     docker_memory_limit_mb: 8192
     docker_shm_size_mb: 2048
+  # OpenCode Beast Mode — external AI coding agent for complex experiments
+  # Install: npm i -g opencode-ai@latest  (or use `researchclaw setup`)
+  opencode:
+    enabled: true                # Master switch (default: true)
+    auto: true                   # Auto-trigger without confirmation (default: true)
+    complexity_threshold: 0.2    # 0.0-1.0 — higher = only trigger on complex experiments
+    model: ""                    # Override model (empty = use llm.primary_model)
+    timeout_sec: 600             # Max seconds for OpenCode generation
+    max_retries: 1               # Retry count on failure
+    workspace_cleanup: true      # Remove temp workspace after collection
 
 # ============================================================================
 # SSH Remote Examples

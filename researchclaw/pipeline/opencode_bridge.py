@@ -578,10 +578,12 @@ class OpenCodeBridge:
                 logger.warning("Beast mode: %s", last_error)
                 continue
 
-            # Build the mega-prompt
-            prompt = _MEGA_PROMPT_TEMPLATE.format(
-                metric=metric,
-                time_budget_sec=time_budget_sec,
+            # Build the mega-prompt (use replace instead of .format() to
+            # avoid KeyError when metric contains curly braces like "F{1}")
+            prompt = _MEGA_PROMPT_TEMPLATE.replace(
+                "{metric}", metric
+            ).replace(
+                "{time_budget_sec}", str(time_budget_sec)
             )
 
             logger.info(
