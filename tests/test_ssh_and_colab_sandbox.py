@@ -134,6 +134,46 @@ class TestSshRemoteSandboxCommands:
         assert "--network" not in cmd
 
 
+# ── Entry point path traversal validation ─────────────────────────────
+
+
+class TestSshEntryPointValidation:
+    def test_run_project_rejects_path_traversal(self, tmp_path: Path):
+        """run_project() must reject entry_point with '..' components."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "main.py").write_text("print('hi')")
+
+        cfg = SshRemoteConfig(host="server", user="test")
+        work = tmp_path / "work"
+        sandbox = SshRemoteSandbox(cfg, work)
+        # Create escape target so .exists() alone wouldn't catch it
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "escape.py").write_text("print('escaped!')")
+        # Mock _execute to ensure it's never reached
+        sandbox._execute = mock.MagicMock()  # type: ignore[assignment]
+        result = sandbox.run_project(project, entry_point="../escape.py")
+
+        assert result.returncode == -1
+        assert ".." in result.stderr
+        sandbox._execute.assert_not_called()
+
+    def test_run_project_rejects_absolute_path(self, tmp_path: Path):
+        """run_project() must reject absolute entry_point paths."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "main.py").write_text("print('hi')")
+
+        cfg = SshRemoteConfig(host="server", user="test")
+        sandbox = SshRemoteSandbox(cfg, tmp_path / "work")
+        sandbox._execute = mock.MagicMock()  # type: ignore[assignment]
+        result = sandbox.run_project(project, entry_point="/etc/passwd")
+
+        assert result.returncode == -1
+        assert "relative" in result.stderr.lower() or "absolute" in result.stderr.lower()
+        sandbox._execute.assert_not_called()
+
+
 class TestSshConnectivityCheck:
     def test_empty_host(self):
         cfg = SshRemoteConfig(host="")

@@ -79,12 +79,18 @@ _DOMAIN_KEYWORDS: dict[str, tuple[list[str], str, str]] = {
         "AER, Econometrica, QJE, Review of Economic Studies",
     ),
     "mathematics": (
-        ["theorem", "proof", "conjecture", "topology", "algebra",
+        ["theorem", "proof", "prove", "conjecture", "topology", "algebra",
          "number theory", "combinatorics", "differential equation",
          "stochastic process", "functional analysis", "manifold",
          "Riemannian", "category theory", "graph theory",
          "neural ODE", "dynamical system", "Lorenz", "chaotic",
-         "Lyapunov", "attractor", "ODE solver", "trajectory prediction"],
+         "Lyapunov", "attractor", "ODE solver", "trajectory prediction",
+         "mathematical formulation", "mathematical proof", "derivation",
+         "Brownian motion", "branching process", "Galton-Watson",
+         "Markov chain", "martingale", "ergodic", "convergence theorem",
+         "marginal distribution", "extinction probability", "Feynman-Kac",
+         "measure theory", "Hilbert space", "Banach space", "operator theory",
+         "variational", "Euler-Lagrange", "calculus of variations"],
         "mathematics",
         "Annals of Mathematics, Inventiones Mathematicae, JAMS",
     ),
@@ -121,8 +127,19 @@ def _detect_domain(topic: str, domains: tuple[str, ...] = ()) -> tuple[str, str,
     # Auto-detect from topic text
     topic_lower = topic.lower()
     best_did, best_score = "ml", 0
+    # BUG-101: Explicit theoretical intent words boost non-empirical domain scores.
+    # Topics like "derive the mathematical formulation of X diffusion model"
+    # should classify as math, not ML, even if "diffusion model" is an ML keyword.
+    _theoretical_intent = any(
+        w in topic_lower
+        for w in ("derive", "prove", "mathematical formulation",
+                  "mathematical proof", "formal proof", "formalism")
+    )
     for did, (kws, dname, venues) in _DOMAIN_KEYWORDS.items():
         score = sum(1 for k in kws if k.lower() in topic_lower)
+        # Boost non-empirical domains when theoretical intent is detected
+        if _theoretical_intent and did in ("mathematics", "physics", "economics"):
+            score += 1
         if score > best_score:
             best_score = score
             best_did = did
@@ -8827,6 +8844,84 @@ def _execute_export_publish(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Chart generation failed: %s", exc)
 
+    # BUG-99: Validate that \includegraphics paths in .tex match actual files.
+    # The LLM may write paper referencing a chart name that differs from the
+    # actual generated filename (e.g. "performance_comparison.png" vs
+    # "experiment_comparison.png").
+    try:
+        tex_path = stage_dir / "paper.tex"
+        if tex_path.exists():
+            tex_text = tex_path.read_text(encoding="utf-8")
+            # Extract all \includegraphics{path} references
+            _fig_refs = re.findall(
+                r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", tex_text
+            )
+            if _fig_refs:
+                # Collect all actual chart files in stage_dir/charts/
+                _chart_dir = stage_dir / "charts"
+                _actual_files: dict[str, str] = {}  # lowercase stem → relative path
+                if _chart_dir.is_dir():
+                    for _af in _chart_dir.iterdir():
+                        if _af.is_file() and _af.suffix.lower() in (
+                            ".png", ".jpg", ".jpeg", ".pdf", ".svg",
+                        ):
+                            _actual_files[_af.stem.lower()] = f"charts/{_af.name}"
+                            _actual_files[_af.name.lower()] = f"charts/{_af.name}"
+
+                _fixes: dict[str, str] = {}
+                for _ref in _fig_refs:
+                    _ref_path = stage_dir / _ref
+                    if _ref_path.exists():
+                        continue  # File exists, no fix needed
+                    # Try fuzzy matching against actual chart files
+                    _ref_stem = Path(_ref).stem.lower()
+                    _ref_name = Path(_ref).name.lower()
+                    # Exact stem match (different extension or directory)
+                    if _ref_stem in _actual_files:
+                        _fixes[_ref] = _actual_files[_ref_stem]
+                        continue
+                    if _ref_name in _actual_files:
+                        _fixes[_ref] = _actual_files[_ref_name]
+                        continue
+                    # Fuzzy match: find best match by keyword overlap
+                    if _actual_files:
+                        _ref_words = set(_ref_stem.replace("-", "_").split("_"))
+                        _best_match, _best_overlap = "", 0
+                        for _stem, _apath in _actual_files.items():
+                            _a_words = set(
+                                _stem.replace("-", "_").split("_")
+                            )
+                            _overlap = len(_ref_words & _a_words)
+                            if _overlap > _best_overlap:
+                                _best_overlap = _overlap
+                                _best_match = _apath
+                        if _best_overlap >= 1 and _best_match:
+                            _fixes[_ref] = _best_match
+
+                if _fixes:
+                    for _old_path, _new_path in _fixes.items():
+                        tex_text = tex_text.replace(
+                            f"{{{_old_path}}}", f"{{{_new_path}}}"
+                        )
+                    tex_path.write_text(tex_text, encoding="utf-8")
+                    logger.warning(
+                        "BUG-99: Fixed %d figure path mismatch(es) in paper.tex: %s",
+                        len(_fixes),
+                        ", ".join(f"{k} → {v}" for k, v in _fixes.items()),
+                    )
+                # Warn about any remaining unresolved references
+                _still_missing = [
+                    r for r in _fig_refs
+                    if r not in _fixes and not (stage_dir / r).exists()
+                ]
+                if _still_missing:
+                    logger.warning(
+                        "Stage 22: %d figure reference(s) have no matching file: %s",
+                        len(_still_missing), _still_missing[:5],
+                    )
+    except Exception as _fig_exc:  # noqa: BLE001
+        logger.debug("Stage 22: Figure path validation skipped: %s", _fig_exc)
+
     # --- Code packaging: multi-file directory or single file ---
     exp_final_dir_path = _read_prior_artifact(run_dir, "experiment_final/")
     if exp_final_dir_path and Path(exp_final_dir_path).is_dir():
@@ -9238,6 +9333,14 @@ def _execute_citation_verify(
                 len(_uncited_vbib),
                 len(_vbib_keys) - len(_uncited_vbib),
             )
+
+    # BUG-100: If all entries were filtered out (low-relevance + uncited pruning),
+    # write a comment instead of an empty file to avoid "Missing or empty output" error.
+    if not verified_bib.strip():
+        verified_bib = "% All citations were filtered out during verification\n"
+        logger.warning(
+            "Stage 23: All BibTeX entries filtered out — writing placeholder"
+        )
 
     (stage_dir / "references_verified.bib").write_text(verified_bib, encoding="utf-8")
 

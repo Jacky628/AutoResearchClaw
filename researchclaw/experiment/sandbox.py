@@ -17,6 +17,36 @@ from researchclaw.hardware import is_metric_name
 
 logger = logging.getLogger(__name__)
 
+
+def validate_entry_point(entry_point: str) -> str | None:
+    """Validate *entry_point* syntax (no filesystem access needed).
+
+    Returns an error message if invalid, ``None`` if valid.
+    Call this **before** copying files to fail fast on obviously bad input.
+    """
+    if not entry_point or not entry_point.strip():
+        return "Entry point is empty"
+    ep = Path(entry_point)
+    if ep.is_absolute():
+        return f"Entry point must be a relative path, got: {entry_point}"
+    if ".." in ep.parts:
+        return f"Entry point must not contain '..': {entry_point}"
+    return None
+
+
+def validate_entry_point_resolved(staging: Path, entry_point: str) -> str | None:
+    """Validate that *entry_point* resolves inside *staging*.
+
+    Returns an error message if invalid, ``None`` if valid.
+    Call this **after** copying files so that symlinks are resolved against
+    the real staging contents.
+    """
+    resolved = (staging / entry_point).resolve()
+    staging_resolved = staging.resolve()
+    if not resolved.is_relative_to(staging_resolved):
+        return f"Entry point escapes staging directory: {entry_point}"
+    return None
+
 # Matches both plain "metric: value" and "condition=xxx metric: value" formats
 _FLOAT_RE = r"[+-]?\d+\.?\d*(?:[eE][+-]?\d+)?"
 _METRIC_PATTERN = re.compile(
@@ -276,6 +306,14 @@ class ExperimentSandbox:
             shutil.rmtree(sandbox_project)
         sandbox_project.mkdir(parents=True, exist_ok=True)
 
+        # Pre-copy syntax validation — fail fast before any I/O
+        err = validate_entry_point(entry_point)
+        if err:
+            return SandboxResult(
+                returncode=-1, stdout="", stderr=err,
+                elapsed_sec=0.0, metrics={},
+            )
+
         # R5-4: Inject immutable experiment harness before copying project files
         self._inject_harness(sandbox_project)
 
@@ -288,6 +326,14 @@ class ExperimentSandbox:
                     logger.warning("Project contains experiment_harness.py — skipping (immutable)")
                     continue
                 dest.write_bytes(src_file.read_bytes())
+
+        # Post-copy resolve check — catches symlink-based escapes
+        err = validate_entry_point_resolved(sandbox_project, entry_point)
+        if err:
+            return SandboxResult(
+                returncode=-1, stdout="", stderr=err,
+                elapsed_sec=0.0, metrics={},
+            )
 
         entry = sandbox_project / entry_point
         if not entry.exists():
