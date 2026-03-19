@@ -2378,6 +2378,12 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "  If the current draft exceeds this, compress by removing redundant restatements.\n"
             "- If the paper exceeds 10 pages, aggressively cut redundant content, "
             "merge similar sections, and tighten prose. Target 8-9 pages of main content.\n"
+            "- CITATION FORMAT (CRITICAL): All citations MUST remain in [cite_key] bracket "
+            "format exactly as they appear in the draft, e.g. [smith2024transformer]. "
+            "Do NOT convert them to author-year format like [Smith et al., 2024] or "
+            "(Smith et al., 2024). The downstream LaTeX converter relies on the "
+            "[cite_key] format to generate \\cite{{}} commands. Changing the format "
+            "will break all references in the final PDF.\n"
             "{writing_structure}\n"
             "{topic_constraint}"
             "Draft:\n{draft}\n\nReviews:\n{reviews}"
@@ -2413,6 +2419,10 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "Format revised paper into clean final markdown for publication "
             "export.\n"
             "Preserve content quality and readability.\n"
+            "CITATION FORMAT (CRITICAL): All citations MUST remain in [cite_key] bracket "
+            "format, e.g. [smith2024transformer]. Do NOT convert to author-year "
+            "format like [Smith et al., 2024]. The [cite_key] format is required "
+            "for downstream LaTeX \\cite{{}} generation.\n"
             "Input paper:\n{revised}"
         ),
         "max_tokens": 16384,

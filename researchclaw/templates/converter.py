@@ -56,6 +56,7 @@ def markdown_to_latex(
     title: str = "",
     authors: str = "Anonymous",
     bib_file: str = "references",
+    bib_entries: dict[str, str] | None = None,
 ) -> str:
     """Convert a Markdown paper to a complete LaTeX document.
 
@@ -72,6 +73,10 @@ def markdown_to_latex(
         Author string inserted into the template author block.
     bib_file:
         Bibliography filename (without ``.bib`` extension).
+    bib_entries:
+        Optional mapping of author-year patterns to cite_keys for
+        recovering author-year citations that slipped through earlier
+        processing, e.g. ``{"Raissi et al., 2019": "raissi2019physics"}``.
 
     Returns
     -------
@@ -117,7 +122,7 @@ def markdown_to_latex(
     tex = preamble + "\n" + body + footer
 
     # Final sanitization pass on the complete LaTeX output
-    tex = _sanitize_latex_output(tex)
+    tex = _sanitize_latex_output(tex, bib_entries=bib_entries)
 
     return tex
 
@@ -127,8 +132,31 @@ def markdown_to_latex(
 # ---------------------------------------------------------------------------
 
 
-def _sanitize_latex_output(tex: str) -> str:
+def _sanitize_latex_output(
+    tex: str,
+    *,
+    bib_entries: dict[str, str] | None = None,
+) -> str:
     """Remove artifacts that slip through pre-processing into the final .tex."""
+    # 0. BUG-102 safety net: Convert remaining author-year citations to \cite{}.
+    #    If upstream conversion missed any [Author et al., 2024] patterns, catch them here.
+    if bib_entries:
+        for ay_pattern in sorted(bib_entries, key=len, reverse=True):
+            cite_key = bib_entries[ay_pattern]
+            # [Author et al., 2024] → \cite{key}
+            tex = tex.replace(f"[{ay_pattern}]", f"\\cite{{{cite_key}}}")
+            # Also handle inside existing brackets (multi-citation)
+            tex = tex.replace(ay_pattern, f"\\cite{{{cite_key}}}")
+        # Clean up double-nested \cite from multi-citation brackets:
+        # [\cite{a}, \cite{b}] → \cite{a, b}
+        def _merge_bracket_cites(m: re.Match[str]) -> str:
+            inner = m.group(1)
+            keys = re.findall(r"\\cite\{([^}]+)\}", inner)
+            if keys:
+                return "\\cite{" + ", ".join(keys) + "}"
+            return m.group(0)
+        tex = re.sub(r"\[([^\]]*\\cite\{[^\]]+)\]", _merge_bracket_cites, tex)
+
     # 1. Remove broken citation markers: \cite{?key:NOT_IN_BIB} or literal [?key:NOT_IN_BIB]
     tex = re.sub(r"\\cite\{\?[^}]*:NOT_IN_BIB\}", "", tex)
     tex = re.sub(r"\[\?[a-zA-Z0-9_:-]+:NOT_IN_BIB\]", "", tex)

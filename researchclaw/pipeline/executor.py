@@ -8573,6 +8573,7 @@ def _execute_export_publish(
     artifacts = ["paper_final.md"]
     # F2.7: Post-process citations — [cite_key] → \cite{cite_key}
     # and copy final references.bib to export stage
+    _ay_map: dict[str, str] = {}  # BUG-102: author-year → cite_key map
     bib_text = _read_prior_artifact(run_dir, "references.bib")
     if bib_text:
         # Replace [cite_key] patterns in the final paper with \cite{cite_key}
@@ -8580,6 +8581,114 @@ def _execute_export_publish(
         import re as _re
 
         valid_keys = set(_re.findall(r"@\w+\{([^,]+),", bib_text))
+
+        # BUG-102: Recover author-year citations → [cite_key] format.
+        # When Stage 19 (paper_revision) converts [cite_key] to [Author et al., 2024],
+        # the downstream regex can't match them. Build a reverse map from bib entries.
+        def _build_author_year_map(bib: str, keys: set[str]) -> dict[str, str]:
+            """Build mapping from author-year patterns to cite_keys.
+
+            Returns dict like:
+              "Raissi et al., 2019" → "raissi2019physicsinformed"
+              "Tavella and Randall, 2000" → "tavella2000pricing"
+            """
+            mapping: dict[str, str] = {}
+            # Parse each bib entry for author + year
+            entry_pat = _re.compile(
+                r"@\w+\{([^,]+),\s*(.*?)\n\}", _re.DOTALL
+            )
+            for m in entry_pat.finditer(bib):
+                key = m.group(1).strip()
+                if key not in keys:
+                    continue
+                body = m.group(2)
+                # Extract author field
+                author_m = _re.search(
+                    r"author\s*=\s*[\{\"](.*?)[\}\"]", body, _re.IGNORECASE
+                )
+                year_m = _re.search(
+                    r"year\s*=\s*[\{\"]?(\d{4})[\}\"]?", body, _re.IGNORECASE
+                )
+                if not author_m or not year_m:
+                    continue
+                author_raw = author_m.group(1).strip()
+                year = year_m.group(1)
+                # Parse author names (split on " and ")
+                authors = [a.strip() for a in _re.split(r"\s+and\s+", author_raw)]
+                # Extract last names
+                last_names = []
+                for a in authors:
+                    if "," in a:
+                        last_names.append(a.split(",")[0].strip())
+                    else:
+                        parts = a.split()
+                        last_names.append(parts[-1] if parts else a)
+                if not last_names:
+                    continue
+                # Generate author-year patterns:
+                # 1 author: "Smith, 2024"
+                # 2 authors: "Smith and Jones, 2024"
+                # 3+ authors: "Smith et al., 2024"
+                if len(last_names) == 1:
+                    patterns = [f"{last_names[0]}, {year}"]
+                elif len(last_names) == 2:
+                    patterns = [
+                        f"{last_names[0]} and {last_names[1]}, {year}",
+                        f"{last_names[0]} \\& {last_names[1]}, {year}",
+                    ]
+                else:
+                    patterns = [
+                        f"{last_names[0]} et al., {year}",
+                        f"{last_names[0]} et al. {year}",
+                    ]
+                    # Also add "Smith and Jones, 2024" for first two authors
+                    patterns.append(
+                        f"{last_names[0]} and {last_names[1]}, {year}"
+                    )
+                for pat in patterns:
+                    mapping[pat] = key
+            return mapping
+
+        _ay_map = _build_author_year_map(bib_text, valid_keys)
+        if _ay_map:
+            # Count how many author-year citations exist in the paper
+            _ay_found = 0
+            for _ay_pat in _ay_map:
+                if _ay_pat in final_paper:
+                    _ay_found += 1
+            if _ay_found > 0:
+                logger.info(
+                    "Stage 22: Found %d author-year citation patterns — "
+                    "converting back to [cite_key] format.",
+                    _ay_found,
+                )
+                # Sort by longest pattern first to avoid partial matches
+                for _ay_pat in sorted(_ay_map, key=len, reverse=True):
+                    _ay_key = _ay_map[_ay_pat]
+                    # Match [Author et al., 2024] or [Author and Jones, 2024; ...]
+                    # Handle single-citation brackets
+                    final_paper = final_paper.replace(
+                        f"[{_ay_pat}]", f"[{_ay_key}]"
+                    )
+                    # Handle within multi-citation brackets [A et al., 2020; B et al., 2021]
+                    # Replace the author-year segment inside brackets
+                    final_paper = final_paper.replace(_ay_pat, _ay_key)
+                # Fix multi-key brackets: [key1; key2] → [key1, key2]
+                # (author-year uses semicolons, cite-keys use commas)
+                def _fix_semicolon_cites(m_sc: _re.Match[str]) -> str:
+                    inner = m_sc.group(1)
+                    # Only convert if ALL segments look like cite keys
+                    parts = [p.strip() for p in inner.split(";")]
+                    _ck = r"[a-zA-Z][a-zA-Z0-9_-]*\d{4}[a-zA-Z0-9_]*"
+                    if all(_re.fullmatch(_ck, p) for p in parts):
+                        return "[" + ", ".join(parts) + "]"
+                    return m_sc.group(0)
+                final_paper = _re.sub(
+                    r"\[([^\]]+;[^\]]+)\]", _fix_semicolon_cites, final_paper
+                )
+                (stage_dir / "paper_final.md").write_text(
+                    final_paper, encoding="utf-8"
+                )
 
         # R10-Fix4: Citation cross-validation
         cited_keys_in_paper = set(_re.findall(r"\[([a-z]+\d{4}[a-z]*)\]", final_paper))
@@ -8707,6 +8816,7 @@ def _execute_export_publish(
             title=_extract_paper_title(tex_source),
             authors=config.export.authors,
             bib_file=config.export.bib_file,
+            bib_entries=_ay_map or None,
         )
         (stage_dir / "paper.tex").write_text(tex_content, encoding="utf-8")
         artifacts.append("paper.tex")
