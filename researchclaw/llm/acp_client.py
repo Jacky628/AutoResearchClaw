@@ -285,13 +285,18 @@ class ACPClient:
 
     def _send_prompt_cli(self, acpx: str, prompt: str) -> str:
         """Send prompt as a CLI argument (original path)."""
-        result = subprocess.run(
-            [acpx, "--approve-all", "--ttl", "0", "--cwd", self._abs_cwd(),
-             self.config.agent, "-s", self.config.session_name,
-             prompt],
-            capture_output=True, text=True,
-            timeout=self.config.timeout_sec,
-        )
+        try:
+            result = subprocess.run(
+                [acpx, "--approve-all", "--ttl", "0", "--cwd", self._abs_cwd(),
+                 self.config.agent, "-s", self.config.session_name,
+                 prompt],
+                capture_output=True, text=True,
+                timeout=self.config.timeout_sec,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"ACP prompt timed out after {self.config.timeout_sec}s"
+            ) from exc
 
         if result.returncode != 0:
             stderr = result.stderr.strip()
@@ -315,13 +320,18 @@ class ACPClient:
                 f"just produce the requested output."
             )
 
-            result = subprocess.run(
-                [acpx, "--approve-all", "--ttl", "0", "--cwd", self._abs_cwd(),
-                 self.config.agent, "-s", self.config.session_name,
-                 short_prompt],
-                capture_output=True, text=True,
-                timeout=self.config.timeout_sec,
-            )
+            try:
+                result = subprocess.run(
+                    [acpx, "--approve-all", "--ttl", "0", "--cwd", self._abs_cwd(),
+                     self.config.agent, "-s", self.config.session_name,
+                     short_prompt],
+                    capture_output=True, text=True,
+                    timeout=self.config.timeout_sec,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(
+                    f"ACP prompt timed out after {self.config.timeout_sec}s"
+                ) from exc
 
             if result.returncode != 0:
                 stderr = result.stderr.strip()
