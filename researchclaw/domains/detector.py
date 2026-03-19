@@ -217,6 +217,20 @@ _KEYWORD_RULES: list[tuple[list[str], str]] = [
      "ml_tabular"),
     (["generative adversarial", "gan", "diffusion model", "vae",
       "variational autoencoder", "image generation"], "ml_generative"),
+    # Neuroscience (before ML catch-all so "spiking neural" is not swallowed
+    # by the "neural network" pattern in ml_generic)
+    (["spiking neural", "spike train", "brian2", "hodgkin-huxley",
+      "integrate-and-fire", "lif model", "izhikevich",
+      "membrane potential", "action potential", "neural circuit",
+      "neural dynamics", "population coding", "neural decoding",
+      "raster plot", "firing rate", "synaptic", "connectome"],
+     "neuroscience_computational"),
+    (["fmri", "eeg", "meg", "neuroimaging", "brain imaging",
+      "nilearn", "mne-python", "bold signal", "brain network",
+      "functional connectivity"], "neuroscience_imaging"),
+    (["neuroscience", "neuron model", "brain simulation",
+      "neural computation", "neural encoding"], "neuroscience_computational"),
+
     # Catch-all ML
     (["neural network", "deep learning", "machine learning", "training loop",
       "backpropagation", "gradient descent", "pytorch", "tensorflow",
@@ -270,19 +284,6 @@ _KEYWORD_RULES: list[tuple[list[str], str]] = [
     (["intrusion detection", "malware", "anomaly detection",
       "network traffic", "cybersecurity", "vulnerability",
       "threat detection", "scapy"], "security_detection"),
-
-    # Neuroscience
-    (["spiking neural", "spike train", "brian2", "hodgkin-huxley",
-      "integrate-and-fire", "lif model", "izhikevich",
-      "membrane potential", "action potential", "neural circuit",
-      "neural dynamics", "population coding", "neural decoding",
-      "raster plot", "firing rate", "synaptic", "connectome"],
-     "neuroscience_computational"),
-    (["fmri", "eeg", "meg", "neuroimaging", "brain imaging",
-      "nilearn", "mne-python", "bold signal", "brain network",
-      "functional connectivity"], "neuroscience_imaging"),
-    (["neuroscience", "neuron model", "brain simulation",
-      "neural computation", "neural encoding"], "neuroscience_computational"),
 
     # Robotics / Control
     (["robot", "robotic", "control", "manipulation",

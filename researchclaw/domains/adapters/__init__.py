@@ -11,6 +11,7 @@ from researchclaw.domains.adapters.economics import EconomicsPromptAdapter
 from researchclaw.domains.adapters.biology import BiologyPromptAdapter
 from researchclaw.domains.adapters.chemistry import ChemistryPromptAdapter
 from researchclaw.domains.adapters.neuroscience import NeurosciencePromptAdapter
+from researchclaw.domains.adapters.robotics import RoboticsPromptAdapter
 
 __all__ = [
     "MLPromptAdapter",
@@ -20,4 +21,5 @@ __all__ = [
     "BiologyPromptAdapter",
     "ChemistryPromptAdapter",
     "NeurosciencePromptAdapter",
+    "RoboticsPromptAdapter",
 ]
