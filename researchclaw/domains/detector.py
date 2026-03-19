@@ -217,6 +217,20 @@ _KEYWORD_RULES: list[tuple[list[str], str]] = [
      "ml_tabular"),
     (["generative adversarial", "gan", "diffusion model", "vae",
       "variational autoencoder", "image generation"], "ml_generative"),
+    # Neuroscience (before ML catch-all so "spiking neural" is not swallowed
+    # by the "neural network" pattern in ml_generic)
+    (["spiking neural", "spike train", "brian2", "hodgkin-huxley",
+      "integrate-and-fire", "lif model", "izhikevich",
+      "membrane potential", "action potential", "neural circuit",
+      "neural dynamics", "population coding", "neural decoding",
+      "raster plot", "firing rate", "synaptic", "connectome"],
+     "neuroscience_computational"),
+    (["fmri", "eeg", "meg", "neuroimaging", "brain imaging",
+      "nilearn", "mne-python", "bold signal", "brain network",
+      "functional connectivity"], "neuroscience_imaging"),
+    (["neuroscience", "neuron model", "brain simulation",
+      "neural computation", "neural encoding"], "neuroscience_computational"),
+
     # Catch-all ML
     (["neural network", "deep learning", "machine learning", "training loop",
       "backpropagation", "gradient descent", "pytorch", "tensorflow",
@@ -317,6 +331,8 @@ Available domains:
 - mathematics_numerical: Numerical methods (ODE/PDE solvers, convergence)
 - mathematics_optimization: Optimization (convex, evolutionary)
 - security_detection: Security/intrusion detection
+- neuroscience_computational: Computational neuroscience (spiking networks, neural dynamics, population coding)
+- neuroscience_imaging: Brain imaging analysis (fMRI, EEG, MEG, functional connectivity)
 - robotics_control: Robotics and control
 - generic: Cannot classify / cross-domain
 
