@@ -274,6 +274,11 @@ class ACPClient:
         If the session has died (common after long-running stages), retries
         up to ``_MAX_RECONNECT_ATTEMPTS`` times with automatic reconnection.
         """
+        # Sanitize null bytes that may originate from web-scraped content
+        # or OpenAlex API responses — subprocess.run() rejects \x00 because
+        # the underlying C execve() treats it as a string terminator.
+        prompt = prompt.replace("\x00", "")
+
         acpx = self._resolve_acpx()
         if not acpx:
             raise RuntimeError("acpx not found")
