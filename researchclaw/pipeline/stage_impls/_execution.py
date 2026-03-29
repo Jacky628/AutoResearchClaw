@@ -652,6 +652,41 @@ def _execute_iterative_refine(
             parts.append(f"```filename:{fname}\n{code}\n```")
         return "\n\n".join(parts)
 
+    def _write_refinement_log() -> None:
+        (stage_dir / "refinement_log.json").write_text(
+            json.dumps(log, indent=2), encoding="utf-8"
+        )
+
+    def _pause_refinement(
+        *,
+        reason: str,
+        stop_reason: str,
+        iteration: int | None = None,
+    ) -> StageResult:
+        log.update(
+            {
+                "paused": True,
+                "converged": False,
+                "stop_reason": stop_reason,
+                "pause_reason": reason,
+                "best_metric": best_metric,
+                "best_version": best_version,
+                "iterations_completed": len(log["iterations"]),
+            }
+        )
+        if iteration is not None:
+            log["pause_iteration"] = iteration
+        _write_refinement_log()
+        artifacts = ("refinement_log.json",)
+        return StageResult(
+            stage=Stage.ITERATIVE_REFINE,
+            status=StageStatus.PAUSED,
+            artifacts=artifacts,
+            error=reason,
+            decision="resume",
+            evidence_refs=tuple(f"stage-13/{a}" for a in artifacts),
+        )
+
     if llm is None:
         logger.info("Stage 13: LLM unavailable, saving original experiment as final")
         final_dir = stage_dir / "experiment_final"
@@ -677,9 +712,7 @@ def _execute_iterative_refine(
                 ],
             }
         )
-        (stage_dir / "refinement_log.json").write_text(
-            json.dumps(log, indent=2), encoding="utf-8"
-        )
+        _write_refinement_log()
         artifacts = ("refinement_log.json", "experiment_final/")
         return StageResult(
             stage=Stage.ITERATIVE_REFINE,
@@ -803,12 +836,25 @@ def _execute_iterative_refine(
                 timeout_refine_attempts,
             )
 
-        response = _chat_with_prompt(
-            llm,
-            ip.system,
-            user_prompt,
-            max_tokens=ip.max_tokens or 8192,
-        )
+        try:
+            response = _chat_with_prompt(
+                llm,
+                ip.system,
+                user_prompt,
+                max_tokens=ip.max_tokens or 8192,
+            )
+        except RuntimeError as exc:
+            if "ACP prompt timed out after" in str(exc):
+                logger.warning(
+                    "Stage 13: ACP prompt timed out during iteration %d; pausing for resume",
+                    iteration,
+                )
+                return _pause_refinement(
+                    reason=str(exc),
+                    stop_reason="acp_prompt_timeout",
+                    iteration=iteration,
+                )
+            raise
         extracted_files = _extract_multi_file_blocks(response.content)
         # If LLM returns only single block, treat as main.py update
         if not extracted_files:
@@ -865,7 +911,20 @@ def _execute_iterative_refine(
                 issue_text=issue_text,
                 all_files_ctx=_files_to_context(candidate_files),
             )
-            repair_response = _chat_with_prompt(llm, irp.system, irp.user)
+            try:
+                repair_response = _chat_with_prompt(llm, irp.system, irp.user)
+            except RuntimeError as exc:
+                if "ACP prompt timed out after" in str(exc):
+                    logger.warning(
+                        "Stage 13: ACP repair prompt timed out during iteration %d; pausing for resume",
+                        iteration,
+                    )
+                    return _pause_refinement(
+                        reason=str(exc),
+                        stop_reason="acp_prompt_timeout",
+                        iteration=iteration,
+                    )
+                raise
             candidate_files["main.py"] = _extract_code_block(repair_response.content)
             validation = validate_code(candidate_files["main.py"])
             repaired = True
@@ -977,7 +1036,20 @@ def _execute_iterative_refine(
                     issue_text=runtime_issues,
                     all_files_ctx=_files_to_context(candidate_files),
                 )
-                repair_resp = _chat_with_prompt(llm, rrp.system, rrp.user)
+                try:
+                    repair_resp = _chat_with_prompt(llm, rrp.system, rrp.user)
+                except RuntimeError as exc:
+                    if "ACP prompt timed out after" in str(exc):
+                        logger.warning(
+                            "Stage 13: ACP runtime-repair prompt timed out during iteration %d; pausing for resume",
+                            iteration,
+                        )
+                        return _pause_refinement(
+                            reason=str(exc),
+                            stop_reason="acp_prompt_timeout",
+                            iteration=iteration,
+                        )
+                    raise
                 repaired_files = _extract_multi_file_blocks(repair_resp.content)
                 if not repaired_files:
                     single = _extract_code_block(repair_resp.content)
@@ -1067,9 +1139,7 @@ def _execute_iterative_refine(
     )
     if _all_ablation_identical:
         log["ablation_identical_warning"] = True
-    (stage_dir / "refinement_log.json").write_text(
-        json.dumps(log, indent=2), encoding="utf-8"
-    )
+    _write_refinement_log()
 
     artifacts = ["refinement_log.json", "experiment_final/"]
     artifacts.extend(
