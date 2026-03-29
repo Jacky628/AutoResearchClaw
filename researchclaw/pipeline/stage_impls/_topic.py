@@ -85,7 +85,9 @@ Investigate the topic with emphasis on reproducible methods and measurable outco
     (stage_dir / "goal.md").write_text(goal_md, encoding="utf-8")
 
     # --- Hardware detection (GPU / MPS / CPU) ---
-    hw = detect_hardware()
+    # When using ssh_remote, detect hardware on the remote host instead of locally
+    _ssh_cfg = config.experiment.ssh_remote if config.experiment.mode == "ssh_remote" else None
+    hw = detect_hardware(ssh_config=_ssh_cfg)
     (stage_dir / "hardware_profile.json").write_text(
         json.dumps(hw.to_dict(), indent=2), encoding="utf-8"
     )
