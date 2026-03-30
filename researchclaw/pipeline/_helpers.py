@@ -235,7 +235,12 @@ def _build_fallback_queries(topic: str) -> list[str]:
 def _write_stage_meta(
     stage_dir: Path, stage: Stage, run_id: str, result: "StageResult"
 ) -> None:
-    next_stage = NEXT_STAGE[stage]
+    if result.status is StageStatus.DONE:
+        next_stage = NEXT_STAGE[stage]
+    else:
+        # Failed / paused / blocked stages should point back to themselves so
+        # retry-resume tooling does not imply that the pipeline advanced.
+        next_stage = stage
     meta = {
         "stage_id": f"{int(stage):02d}-{stage.name.lower()}",
         "run_id": run_id,

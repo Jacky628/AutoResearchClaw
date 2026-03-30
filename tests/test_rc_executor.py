@@ -272,6 +272,29 @@ def test_write_stage_meta_writes_expected_json(run_dir: Path) -> None:
     assert re.match(r"\d{4}-\d{2}-\d{2}T", payload["ts"])
 
 
+def test_write_stage_meta_keeps_paused_stage_as_next_stage(run_dir: Path) -> None:
+    stage_dir = run_dir / "stage-02"
+    stage_dir.mkdir()
+    result = rc_executor.StageResult(
+        stage=Stage.PROBLEM_DECOMPOSE,
+        status=StageStatus.PAUSED,
+        artifacts=("refinement_log.json",),
+        decision="resume",
+        error="ACP prompt timed out after 1800s",
+        evidence_refs=("stage-02/refinement_log.json",),
+    )
+    rc_executor._write_stage_meta(
+        stage_dir, Stage.PROBLEM_DECOMPOSE, "run-paused", result
+    )
+    payload = cast(
+        dict[str, Any],
+        json.loads((stage_dir / "decision.json").read_text(encoding="utf-8")),
+    )
+    assert payload["status"] == "paused"
+    assert payload["decision"] == "resume"
+    assert payload["next_stage"] == int(Stage.PROBLEM_DECOMPOSE)
+
+
 def test_execute_stage_creates_stage_dir_writes_artifacts_and_meta(
     monkeypatch: pytest.MonkeyPatch,
     run_dir: Path,
@@ -750,6 +773,45 @@ class TestIterativeRefine:
         )
         assert payload["stop_reason"] == "llm_unavailable"
         assert result.status == StageStatus.DONE
+
+    def test_refine_acp_timeout_pauses_for_resume(
+        self,
+        run_dir: Path,
+        rc_config: RCConfig,
+        adapters: AdapterBundle,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._prepare_refine_inputs(run_dir)
+        stage_dir = run_dir / "stage-13"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+
+        from researchclaw.pipeline.stage_impls import _execution as execution_impl
+
+        def _timeout(*args, **kwargs):
+            _ = args, kwargs
+            raise RuntimeError("ACP prompt timed out after 1800s")
+
+        monkeypatch.setattr(execution_impl, "_chat_with_prompt", _timeout)
+
+        result = rc_executor._execute_iterative_refine(
+            stage_dir,
+            run_dir,
+            rc_config,
+            adapters,
+            llm=FakeLLMClient("unused"),
+        )
+
+        payload = json.loads(
+            (stage_dir / "refinement_log.json").read_text(encoding="utf-8")
+        )
+        assert result.status == StageStatus.PAUSED
+        assert result.decision == "resume"
+        assert result.artifacts == ("refinement_log.json",)
+        assert payload["paused"] is True
+        assert payload["stop_reason"] == "acp_prompt_timeout"
+        assert payload["pause_iteration"] == 1
+        assert payload["best_version"] == "experiment/"
+        assert not (stage_dir / "experiment_final").exists()
 
     def test_refine_with_llm_generates_improved_code(
         self,

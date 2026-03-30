@@ -299,8 +299,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
 
     done = sum(1 for r in results if r.status.value == "done")
+    paused = sum(1 for r in results if r.status.value == "paused")
     failed = sum(1 for r in results if r.status.value == "failed")
-    print(f"\nPipeline complete: {done}/{len(results)} stages done, {failed} failed")
+    if paused:
+        print(
+            f"\nPipeline paused: {done}/{len(results)} stages done, "
+            f"{paused} paused, {failed} failed"
+        )
+    else:
+        print(f"\nPipeline complete: {done}/{len(results)} stages done, {failed} failed")
     return 0 if failed == 0 else 1
 
 
