@@ -27,7 +27,8 @@ def validate_entry_point(entry_point: str) -> str | None:
     if not entry_point or not entry_point.strip():
         return "Entry point is empty"
     ep = Path(entry_point)
-    if ep.is_absolute():
+    # Check both native absolute and Unix-style absolute (for cross-platform safety)
+    if ep.is_absolute() or entry_point.startswith("/"):
         return f"Entry point must be a relative path, got: {entry_point}"
     if ".." in ep.parts:
         return f"Entry point must not contain '..': {entry_point}"
