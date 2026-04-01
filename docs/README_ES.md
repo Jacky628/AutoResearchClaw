@@ -2,7 +2,7 @@
   <img src="../image/logo.png" width="700" alt="AutoResearchClaw Logo">
 </p>
 
-<h2 align="center"><b>Comparte una idea. Obten un articulo. Totalmente autonomo & autoevolutivo.</b></h2>
+<h2 align="center"><b>Comparte una idea. Obten un articulo. Autonomo, Colaborativo & Auto-evolutivo.</b></h2>
 
 
 
@@ -18,7 +18,7 @@
 <p align="center">
   <a href="../LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/Tests-1823%20passed-brightgreen?logo=pytest&logoColor=white" alt="1823 Tests Passed"></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/Tests-2699%20passed-brightgreen?logo=pytest&logoColor=white" alt="2699 Tests Passed"></a>
   <a href="https://github.com/aiming-lab/AutoResearchClaw"><img src="https://img.shields.io/badge/GitHub-AutoResearchClaw-181717?logo=github" alt="GitHub"></a>
   <a href="#-integracion-con-openclaw"><img src="https://img.shields.io/badge/OpenClaw-Compatible-ff4444?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==" alt="OpenClaw Compatible"></a>
   <a href="https://discord.gg/u4ksqW5P"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
@@ -38,7 +38,7 @@
 </p>
 
 <p align="center">
-  <a href="showcase/SHOWCASE.md">🏆 Galeria de articulos</a> · <a href="integration-guide.md">📖 Guia de integracion</a> · <a href="https://discord.gg/u4ksqW5P">💬 Comunidad Discord</a>
+  <a href="showcase/SHOWCASE.md">🏆 Galeria de articulos</a> · <a href="HITL_GUIDE.md">🧑‍✈️ Guia de Co-Piloto</a> · <a href="integration-guide.md">📖 Guia de integracion</a> · <a href="https://discord.gg/u4ksqW5P">💬 Comunidad Discord</a>
 </p>
 
 ---
@@ -50,7 +50,7 @@
 </td>
 <td valign="middle">
 <b>🏆 Galeria de articulos generados</b><br><br>
-<b>8 articulos en 8 dominios</b> — matematicas, estadistica, biologia, computacion, NLP, RL, vision, robustez — generados de forma completamente autonoma sin intervencion humana.<br><br>
+<b>8 articulos en 8 dominios</b> — matematicas, estadistica, biologia, computacion, NLP, RL, vision, robustez — generados de forma completamente autonoma o con guia de co-piloto Human-in-the-Loop.<br><br>
 <a href="showcase/SHOWCASE.md"><img src="https://img.shields.io/badge/View_Full_Showcase_→-All_8_Papers-d73a49?style=for-the-badge" alt="View Showcase"></a>
 </td>
 </tr>
@@ -63,6 +63,8 @@
 ---
 
 ## 🔥 News
+- **[04/01/2026]** **v0.4.0** — **Sistema Co-Piloto Human-in-the-Loop** — AutoResearchClaw ya no es puramente autonomo. El nuevo sistema HITL agrega 6 modos de intervencion (`full-auto`, `gate-only`, `checkpoint`, `step-by-step`, `co-pilot`, `custom`), politicas por etapa y colaboracion profunda humano-IA. Incluye: Taller de Ideas para co-creacion de hipotesis, Navegador de Baselines para revision del diseno experimental, Co-Escritor de Articulos para redaccion colaborativa, SmartPause (intervencion dinamica basada en confianza), aprendizaje de intervencion ALHF, verificacion de afirmaciones anti-alucinacion, guardias de presupuesto, ramificacion del pipeline para exploracion paralela de hipotesis, y comandos CLI (`attach`/`status`/`approve`/`reject`/`guide`). **[→ Guia HITL completa](HITL_GUIDE.md)**
+- **[03/30/2026]** **Carga Flexible de Habilidades** — AutoResearchClaw ahora soporta la carga de habilidades de codigo abierto y personalizadas de cualquier disciplina para mejorar aun mas tu experiencia de investigacion. Se incluyen 19 habilidades precargadas como referencias listas para usar, cubriendo redaccion cientifica, diseno experimental, quimica, biologia y mas — incluyendo una habilidad de evolucion agente [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) contribuida por la comunidad. Carga las tuyas via `researchclaw skills install` o coloca un `SKILL.md` en `.claude/skills/`. Ver [Biblioteca de Habilidades](#-biblioteca-de-habilidades).
 - **[03/22/2026]** [v0.3.2](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.2) — **Soporte multiplataforma + estabilidad mayor** — AutoResearchClaw ahora funciona con cualquier agente compatible con ACP (Claude Code, Codex CLI, Copilot CLI, Gemini CLI, Kimi CLI) y soporta plataformas de mensajeria (Discord, Telegram, Lark, WeChat) via el puente OpenClaw. Nuevo backend de generacion de codigo CLI-agent que delega las Stages 10 y 13 a agentes CLI externos con control de presupuesto y gestion de timeouts. Incluye sistema anti-fabricacion (VerifiedRegistry + bucle de diagnostico y reparacion), 100+ correcciones de bugs, refactorizacion modular del executor, auto-deteccion de `--resume`, endurecimiento de reintentos LLM y correcciones de la comunidad.
 - **[03/18/2026]** [v0.3.1](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.1) — **OpenCode Beast Mode + Community Contributions** — New "Beast Mode" routes complex code generation to [OpenCode](https://github.com/anomalyco/opencode) with automatic complexity scoring and graceful fallback. Added Novita AI provider support, thread-safety hardening, improved LLM output parsing robustness, and 20+ bug fixes from community PRs and internal audit.
 - **[03/17/2026]** [v0.3.0](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.0) — **MetaClaw Integration** — AutoResearchClaw now supports [MetaClaw](https://github.com/aiming-lab/MetaClaw) cross-run learning: pipeline failures → structured lessons → reusable skills, injected into all 23 stages. **+18.3%** robustness in controlled experiments. Opt-in (`metaclaw_bridge.enabled: true`), fully backward-compatible. See [Integration Guide](#-integracion-metaclaw).
@@ -74,7 +76,11 @@
 ## ⚡ Un comando. Un articulo.
 
 ```bash
+# Totalmente autonomo — sin intervencion humana
 pip install -e . && researchclaw setup && researchclaw init && researchclaw run --topic "Your research idea here" --auto-approve
+
+# Modo Co-Piloto — colabora con la IA en puntos de decision clave
+researchclaw run --topic "Your research idea here" --mode co-pilot
 ```
 
 
@@ -82,9 +88,9 @@ pip install -e . && researchclaw setup && researchclaw init && researchclaw run 
 
 ## 🤔 Que es esto?
 
-**Tu lo piensas. AutoResearchClaw lo escribe.**
+**Tu lo piensas. AutoResearchClaw lo escribe. Tu guias las decisiones clave.**
 
-Proporciona un tema de investigacion — recibe un articulo academico completo con literatura real de OpenAlex, Semantic Scholar y arXiv, experimentos en sandbox adaptados al hardware (deteccion automatica GPU/MPS/CPU), analisis estadistico, revision multi-agentes, y LaTeX listo para conferencia orientado a NeurIPS/ICML/ICLR. Sin supervision. Sin copiar y pegar. Sin referencias alucinadas.
+Proporciona un tema de investigacion — recibe un articulo academico completo con literatura real de OpenAlex, Semantic Scholar y arXiv, experimentos en sandbox adaptados al hardware (deteccion automatica GPU/MPS/CPU), analisis estadistico, revision multi-agentes, y LaTeX listo para conferencia orientado a NeurIPS/ICML/ICLR. Ejecutalo completamente autonomo, o usa el **modo Co-Piloto** para guiar a la IA en puntos de decision criticos — elige direcciones de investigacion, revisa disenos experimentales y co-escribe el articulo. Sin referencias alucinadas.
 
 <table>
 <tr><td>📄</td><td><code>paper_draft.md</code></td><td>Articulo academico completo (Introduccion, Trabajo relacionado, Metodo, Experimentos, Resultados, Conclusion)</td></tr>
@@ -98,7 +104,7 @@ Proporciona un tema de investigacion — recibe un articulo academico completo c
 <tr><td>📦</td><td><code>deliverables/</code></td><td>Todos los entregables finales en una sola carpeta — listos para compilar en Overleaf</td></tr>
 </table>
 
-El pipeline se ejecuta **de principio a fin sin intervencion humana**. Cuando los experimentos fallan, se auto-repara. Cuando las hipotesis no se sostienen, pivotea. Cuando las citas son falsas, las elimina.
+El pipeline se ejecuta **de principio a fin** — completamente autonomo o con colaboracion human-in-the-loop. Cuando los experimentos fallan, se auto-repara. Cuando las hipotesis no se sostienen, pivotea. Cuando las citas son falsas, las elimina. Cuando quieres dirigir, se pausa y escucha.
 
 🌍 **Ejecutalo en cualquier lugar.** AutoResearchClaw no esta atado a una sola plataforma. Usalo de forma independiente por CLI, conectalo a [OpenClaw](https://github.com/openclaw/openclaw), o integralo con cualquier agente compatible con ACP — 🤖 Claude Code, 💻 Codex CLI, 🐙 Copilot CLI, ♊ Gemini CLI, 🌙 Kimi CLI, y mas. Gracias al puente de mensajeria de OpenClaw, puedes iniciar una investigacion completa desde 💬 Discord, ✈️ Telegram, 🐦 Lark (飞书), 💚 WeChat, o cualquier plataforma que tu equipo ya utilice. Un tema de entrada, un paper de salida — sin importar donde lo escribas.
 
@@ -157,11 +163,14 @@ experiment:
 
 | Capacidad | Como funciona |
 |-----------|--------------|
+| **🧑‍✈️ Modo Co-Piloto** | 6 modos de intervencion — desde completamente autonomo hasta paso a paso. Guia a la IA en decisiones criticas (hipotesis, baselines, redaccion del articulo) o dejala correr libre. SmartPause auto-detecta cuando la entrada humana ayudaria. |
 | **🔄 Bucle PIVOT / REFINE** | La etapa 15 decide de forma autonoma: PROCEED, REFINE (ajustar parametros) o PIVOT (nueva direccion). Artefactos auto-versionados. |
 | **🤖 Debate multi-agente** | La generacion de hipotesis, el analisis de resultados y la revision por pares utilizan cada uno debate estructurado multi-perspectiva. |
 | **🧬 Auto-aprendizaje** | Lecciones extraidas por ejecucion (justificacion de decisiones, advertencias de ejecucion, anomalias de metricas) con decaimiento temporal de 30 dias. Las ejecuciones futuras aprenden de errores pasados. |
 | **📚 Base de conocimiento** | Cada ejecucion construye una KB estructurada en 6 categorias (decisiones, experimentos, hallazgos, literatura, preguntas, revisiones). |
 | **🛡️ Vigilante Sentinel** | Monitor de calidad en segundo plano: deteccion NaN/Inf, consistencia articulo-evidencia, puntuacion de relevancia de citas, guardia anti-fabricacion. |
+| **🔍 Verificacion de afirmaciones** | Verificacion de hechos en linea: extrae afirmaciones del texto generado por IA y las cruza con la literatura recopilada. Marca citas infundadas y numeros fabricados. |
+| **🌿 Exploracion de ramas** | Bifurca el pipeline para explorar multiples direcciones de investigacion simultaneamente, compara resultados lado a lado y fusiona el mejor camino. |
 
 ---
 
@@ -249,7 +258,7 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 
 | Metodo | Como |
 |--------|------|
-| **CLI independiente** | `researchclaw setup` → `researchclaw init` → `researchclaw run --topic "..." --auto-approve` |
+| **CLI independiente** | `researchclaw run --topic "..." --auto-approve` (autonomo) o `--mode co-pilot` (colaborativo) |
 | **API de Python** | `from researchclaw.pipeline import Runner; Runner(config).run()` |
 | **Claude Code** | Lee `RESEARCHCLAW_CLAUDE.md` — solo di *"Run research on [tema]"* |
 | **Copilot CLI** | `researchclaw run --topic "..."` con `llm.acp.agent: "gh"` |
@@ -284,6 +293,8 @@ Fase D: Diseno experimental          Fase H: Finalizacion
 
 > Las **etapas con compuerta** (5, 9, 20) se pausan para aprobacion humana o se auto-aprueban con `--auto-approve`. Al rechazar, el pipeline retrocede.
 
+> **Modo Co-Piloto** (`--mode co-pilot`): Colaboracion profunda humano-IA en las Etapas 7-8 (Taller de Ideas), Etapa 9 (Navegador de Baselines) y Etapas 16-17 (Co-Escritor de Articulos). Las demas etapas se auto-ejecutan con monitoreo SmartPause.
+
 > **Bucles de decision**: La etapa 15 puede activar REFINE (→ Etapa 13) o PIVOT (→ Etapa 8), con versionado automatico de artefactos.
 
 <details>
@@ -316,7 +327,123 @@ Fase D: Diseno experimental          Fase H: Finalizacion
 | **🧪 Experimentos en sandbox** | Codigo validado por AST, harness inmutable, fallo rapido NaN/Inf, reparacion auto-curativa, refinamiento iterativo (hasta 10 rondas), captura de resultados parciales |
 | **📝 Redaccion de calidad conferencia** | Plantillas NeurIPS/ICML/ICLR, redaccion seccion por seccion (5,000-6,500 palabras), guardia anti-fabricacion, guardia de longitud en revision, enforcement anti-disclaimer |
 | **📐 Cambio de plantilla** | `neurips_2025`, `iclr_2026`, `icml_2026` — Markdown → LaTeX con formulas, tablas, figuras, referencias cruzadas, `\cite{}` |
+| **🛡️ Anti-fabricacion** | VerifiedRegistry impone datos experimentales de verdad fundamental en los articulos. Auto-diagnostica experimentos fallidos y los repara antes de escribir. Numeros no verificados sanitizados. |
 | **🚦 Compuertas de calidad** | 3 compuertas con intervencion humana posible (etapas 5, 9, 20) con retroceso. Omitir con `--auto-approve`. |
+| **🧑‍✈️ Co-Piloto HITL** | 6 modos de intervencion con politicas por etapa. Taller de Ideas, Navegador de Baselines, Co-Escritor de Articulos para colaboracion profunda. SmartPause, guardias de presupuesto, politicas de escalacion y aprendizaje de intervencion para seguridad en produccion. Adaptadores CLI/WebSocket/MCP. |
+| **💰 Guardias de presupuesto** | Monitoreo de costos con alertas de umbral configurables (50%/80%/100%). El pipeline se auto-pausa cuando el costo excede el presupuesto. |
+| **🔐 Reproducibilidad** | Checksums SHA256 para todos los artefactos de etapa. Manifiestos inmutables para verificacion. Deshacer multi-nivel con snapshots versionados. |
+
+---
+
+## 🧑‍✈️ Co-Piloto Human-in-the-Loop
+
+**AutoResearchClaw v0.4.0 introduce un sistema completo Human-in-the-Loop (HITL)** que transforma el pipeline de puramente autonomo a un motor de investigacion colaborativo humano-IA. Elige tu nivel de participacion:
+
+### Modos de intervencion
+
+| Modo | Comando | Que hace |
+|------|---------|----------|
+| **Full Auto** | `--auto-approve` | Comportamiento original — sin intervencion humana |
+| **Gate Only** | `--mode gate-only` | Pausa en las 3 etapas con compuerta (5, 9, 20) para aprobacion |
+| **Checkpoint** | `--mode checkpoint` | Pausa en cada limite de fase (8 checkpoints) |
+| **Co-Pilot** | `--mode co-pilot` | Colaboracion profunda en etapas criticas, auto en el resto |
+| **Step-by-Step** | `--mode step-by-step` | Pausa despues de cada etapa — aprende el pipeline |
+| **Express** | `--mode express` | Revision rapida — solo las 3 compuertas mas criticas |
+
+### Flujo de trabajo Co-Piloto
+
+```
+Tu: researchclaw run --topic "Ruido cuantico como regularizacion de redes neuronales" --mode co-pilot
+
+El pipeline ejecuta las Etapas 1-7 automaticamente...
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │  HITL | Etapa 08: HYPOTHESIS_GEN                            │
+  │  Revision post-etapa                                        │
+  │                                                             │
+  │  Hipotesis mencionadas: 3                                   │
+  │  Puntuacion de novedad: 0.72 (moderada)                     │
+  │                                                             │
+  │  [a] Aprobar  [r] Rechazar  [e] Editar  [c] Colaborar      │
+  │  [i] Inyectar guia  [v] Ver salida  [q] Abortar            │
+  └─────────────────────────────────────────────────────────────┘
+
+Tu: c  (iniciar chat colaborativo)
+Tu: La Hipotesis 3 es interesante pero necesita Dropout/Label Smoothing como baselines
+IA:  Actualizado — se agregaron Dropout, Label Smoothing, MixUp, CutMix como baselines...
+Tu: aprobar
+
+El pipeline continua con tu hipotesis refinada...
+```
+
+### Comandos CLI
+
+```bash
+# Iniciar con modo HITL
+researchclaw run --topic "..." --mode co-pilot
+
+# Conectarse a un pipeline pausado (desde otra terminal)
+researchclaw attach artifacts/rc-2026-xxx
+
+# Verificar el estado del pipeline y HITL
+researchclaw status artifacts/rc-2026-xxx
+
+# Aprobar/rechazar desde otra terminal o script
+researchclaw approve artifacts/rc-2026-xxx --message "LGTM"
+researchclaw reject artifacts/rc-2026-xxx --reason "Falta baseline clave"
+
+# Inyectar guia para una etapa (incluso antes de que se ejecute)
+researchclaw guide artifacts/rc-2026-xxx --stage 9 --message "Usar ResNet-50 como baseline principal"
+```
+
+### Capacidades clave
+
+| Caracteristica | Descripcion |
+|----------------|------------|
+| **Taller de Ideas** | Lluvia de ideas, evaluacion y refinamiento de hipotesis de forma colaborativa (Etapa 7-8) |
+| **Navegador de Baselines** | La IA sugiere baselines + el humano agrega/elimina + checklist de reproducibilidad (Etapa 9) |
+| **Co-Escritor de Articulos** | Redaccion seccion por seccion con edicion humana y pulido por IA (Etapa 16-19) |
+| **SmartPause** | Pausa dinamica basada en confianza — auto-detecta cuando la entrada humana ayudaria |
+| **Verificacion de afirmaciones** | Verificacion de hechos en linea contra la literatura recopilada — marca afirmaciones infundadas |
+| **Guardias de presupuesto** | Monitoreo de costos con alertas de umbral al 50%/80%/100% |
+| **Aprendizaje de intervencion** | ALHF — aprende de tus patrones de revision para optimizar futuras decisiones de pausa |
+| **Exploracion de ramas** | Bifurca el pipeline para explorar multiples hipotesis, compara y fusiona la mejor |
+| **Politica de escalacion** | Notificacion escalonada (terminal → Slack → email → auto-parada) cuando esta desatendido |
+| **3 Adaptadores** | CLI (terminal), WebSocket (panel web), MCP (agentes externos) |
+
+### Configuracion
+
+```yaml
+# config.arc.yaml
+hitl:
+  enabled: true
+  mode: co-pilot                     # full-auto | gate-only | checkpoint | co-pilot | custom
+  cost_budget_usd: 50.0              # Pausar cuando el costo exceda el presupuesto (0 = sin limite)
+
+  notifications:
+    on_pause: true
+    on_quality_drop: true
+    channels: ["terminal"]            # terminal | slack | webhook
+
+  timeouts:
+    default_human_timeout_sec: 86400  # 24h de espera por defecto
+    auto_proceed_on_timeout: false
+
+  collaboration:
+    max_chat_turns: 50
+    save_chat_history: true
+
+  # Politicas personalizadas por etapa (opcional, para modo 'custom')
+  stage_policies:
+    8: { require_approval: true, enable_collaboration: true }
+    9: { require_approval: true, allow_edit_output: true }
+```
+
+### Retrocompatibilidad
+
+- **Por defecto: DESACTIVADO.** Sin `hitl.enabled: true` o `--mode`, el pipeline se comporta exactamente como antes.
+- **`--auto-approve` sigue funcionando.** Anula el modo HITL.
+- **Los 2,699 tests existentes pasan** con el codigo HITL presente.
 
 ---
 
@@ -387,7 +514,50 @@ En experimentos controlados A/B (mismo tema, mismo LLM, misma configuracion):
 
 - **Por defecto: DESACTIVADO.** Si `metaclaw_bridge` esta ausente o `enabled: false`, el pipeline se comporta exactamente como antes.
 - **Sin nuevas dependencias.** MetaClaw es opcional — el pipeline base funciona sin el.
-- **Los 1,823 tests existentes pasan** con el codigo de integracion presente.
+- **Los 2,699 tests existentes pasan** con el codigo de integracion presente.
+
+---
+
+## 🧩 Biblioteca de Habilidades
+
+AutoResearchClaw ahora soporta la carga de **habilidades de codigo abierto y personalizadas** para mejorar aun mas tu experiencia de investigacion. Tambien incluimos **19 habilidades integradas precargadas** (redaccion cientifica, busqueda de literatura, quimica, biologia y mas) como referencias listas para usar, ofreciendo un alto grado de flexibilidad desde el primer momento. Desactiva cualquier habilidad agregando `enabled: false` a su frontmatter.
+
+**Habilidades integradas de ejemplo:**
+
+| Categoria | Habilidad | Descripcion |
+|-----------|-----------|-------------|
+| **Redaccion** | `scientific-writing` | Estructura IMRAD, formato de citas, guias de reporte |
+| **Dominio** | `chemistry-rdkit` | Analisis molecular, SMILES, fingerprints, descubrimiento de farmacos |
+| **Experimento** | `literature-search` | Revision sistematica, metodologia PRISMA |
+
+> Ver las 19 habilidades con `researchclaw skills list`.
+
+### Carga tus propias habilidades
+
+```bash
+# Opcion 1: Instalar una habilidad (persiste entre proyectos)
+researchclaw skills install /path/to/my-skill/
+
+# Opcion 2: Coloca un SKILL.md en el proyecto
+mkdir -p .claude/skills/my-custom-skill
+# Luego crea un SKILL.md con frontmatter YAML (name, description, trigger-keywords, applicable-stages)
+
+# Opcion 3: Configura directorios de habilidades compartidos en config.arc.yaml
+# skills:
+#   custom_dirs:
+#     - /path/to/team-shared-skills
+```
+
+### Uso de habilidades
+
+Las habilidades se cargan e inyectan en los prompts del LLM automaticamente — no se necesita activacion manual. Usa el CLI para inspeccionar:
+
+```bash
+researchclaw skills list               # Muestra todas las habilidades cargadas con sus fuentes
+researchclaw skills validate ./my-skill # Verifica el formato de SKILL.md
+```
+
+Explora habilidades de la comunidad: [K-Dense-AI/claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills) (150+ habilidades cientificas en multiples disciplinas).
 
 ---
 
@@ -459,6 +629,42 @@ experiment:
     timeout_sec: 600                 # Segundos maximos para generacion OpenCode
     max_retries: 1                   # Numero de reintentos por fallo
     workspace_cleanup: true          # Eliminar workspace temporal despues de recoleccion
+  code_agent:                        # CodeAgent v2 — generacion de codigo multi-fase
+    enabled: true                    # Usar CodeAgent en vez del codegen legacy de un solo prompt
+    architecture_planning: true      # Generar blueprint de implementacion profunda antes de codificar
+    sequential_generation: true      # Generar archivos uno a uno siguiendo el DAG de dependencias
+    hard_validation: true            # Validacion AST (bloquea ablaciones identicas, metricas hardcodeadas)
+    hard_validation_max_repairs: 2   # Max intentos de reparacion cuando la validacion falla
+    exec_fix_max_iterations: 3       # Intentos de correccion de ejecucion en bucle
+    exec_fix_timeout_sec: 60         # Timeout por intento de exec-fix
+  benchmark_agent:                   # BenchmarkAgent — seleccion automatizada de datasets y baselines
+    enabled: true                    # Habilitar pipeline de 4 agentes (Surveyor→Selector→Acquirer→Validator)
+    enable_hf_search: true           # Buscar en HuggingFace Datasets
+    enable_web_search: true          # Buscar en Google Scholar para benchmarks
+    tier_limit: 2                    # Filtrado de nivel de dataset (1=pequeno/cache, 2=medio, 3=grande)
+    min_benchmarks: 1                # Minimo de datasets requeridos
+    min_baselines: 2                 # Minimo de metodos baseline requeridos
+  figure_agent:                      # FigureAgent — generacion de figuras academicas
+    enabled: true                    # Habilitar pipeline de 5 agentes (Planner→CodeGen→Renderer→Critic→Integrator)
+    min_figures: 3                   # Minimo de figuras a generar
+    max_figures: 8                   # Maximo de figuras
+    max_iterations: 3                # Iteraciones de refinamiento dirigidas por el Critic
+    dpi: 300                         # Resolucion de salida
+    strict_mode: false               # Fallar pipeline si la generacion de figuras falla
+  repair:                            # Reparacion de experimentos anti-fabricacion
+    enabled: true                    # Auto-diagnosticar y reparar experimentos fallidos
+    max_cycles: 3                    # Bucles de reintento de reparacion
+    min_completion_rate: 0.5         # >=50% de condiciones deben completarse para continuar
+    min_conditions: 2                # Al menos 2 condiciones para un experimento valido
+    use_opencode: true               # Enrutar reparaciones a traves de OpenCode Beast Mode
+
+# === Busqueda web (Opcional) ===
+web_search:
+  enabled: true                      # Habilitar busqueda de literatura aumentada por web
+  tavily_api_key_env: "TAVILY_API_KEY"  # Variable de entorno para clave API de Tavily (opcional)
+  enable_scholar: true               # Busqueda en Google Scholar
+  enable_pdf_extraction: true        # Extraer texto de PDFs
+  max_web_results: 10                # Maximo de resultados web por consulta
 
 # === Exportacion ===
 export:
@@ -469,6 +675,23 @@ export:
 # === Prompts ===
 prompts:
   custom_file: ""                  # Ruta a YAML de prompts personalizados (vacio = valores por defecto)
+
+# === Co-Piloto HITL (NUEVO en v0.4.0) ===
+hitl:
+  enabled: false                     # Establecer en true para habilitar HITL
+  mode: co-pilot                     # full-auto | gate-only | checkpoint | step-by-step | co-pilot | custom
+  cost_budget_usd: 0.0              # Limite de costo en USD (0 = sin limite)
+  notifications:
+    on_pause: true                   # Notificar cuando el pipeline se pausa
+    on_quality_drop: true            # Notificar por problemas de calidad
+    channels: ["terminal"]           # terminal | slack | webhook
+  timeouts:
+    default_human_timeout_sec: 86400 # Esperar hasta 24h por entrada humana
+    auto_proceed_on_timeout: false   # Si es true, auto-aprobar al expirar timeout
+  collaboration:
+    max_chat_turns: 50               # Max turnos por sesion de colaboracion
+    save_chat_history: true          # Persistir registros de chat
+  stage_policies: {}                 # Overrides por etapa (para modo 'custom')
 
 # === Seguridad ===
 security:
@@ -497,6 +720,11 @@ metaclaw_bridge:
     enabled: true                  # Convertir lecciones en habilidades automaticamente
     min_severity: "warning"        # Severidad minima para conversion
     max_skills_per_run: 3          # Max de nuevas habilidades por ejecucion del pipeline
+  prm:                             # Process Reward Model compuerta de calidad (opcional)
+    enabled: false                 # Usar LLM-como-juez para puntuar salidas de etapas
+    model: "gpt-5.4"              # Modelo juez PRM
+    votes: 3                       # Conteo de voto mayoritario
+    gate_stages: [5, 9, 15, 20]   # Etapas donde aplicar compuertas PRM
 
 # === Bridge de OpenClaw ===
 openclaw_bridge:
@@ -534,7 +762,7 @@ Si encuentras AutoResearchClaw util, por favor cita:
 
 ```bibtex
 @misc{liu2026autoresearchclaw,
-  author       = {Liu, Jiaqi and Xia, Peng and Han, Siwei and Qiu, Shi and Zhang, Letian and Chen, Guiming  and Tu, Haoqin and Yang, Xinyu and and Zhou, Jiawei and Zhu, Hongtu and Li, Yun and Zhou, Yuyin and Zheng, Zeyu and Xie, Cihang and Ding, Mingyu and Yao, Huaxiu},
+  author       = {Liu, Jiaqi and Xia, Peng and Han, Siwei and Qiu, Shi and Zhang, Letian and Chen, Guiming and Tu, Haoqin and Yang, Xinyu and Zhou, Jiawei and Zhu, Hongtu and Li, Yun and Zhou, Yuyin and Zheng, Zeyu and Xie, Cihang and Ding, Mingyu and Yao, Huaxiu},
   title        = {AutoResearchClaw: Fully Autonomous Research from Idea to Paper},
   year         = {2026},
   organization = {GitHub},

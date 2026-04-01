@@ -2,7 +2,7 @@
   <img src="image/logo.png" width="700" alt="AutoResearchClaw Logo">
 </p>
 
-<h2 align="center"><b>Chat an Idea. Get a Paper. Fully Autonomous & Self-Evolving.</b></h2>
+<h2 align="center"><b>Chat an Idea. Get a Paper. Autonomous, Collaborative & Self-Evolving.</b></h2>
 
 
 
@@ -18,7 +18,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/Tests-1823%20passed-brightgreen?logo=pytest&logoColor=white" alt="1823 Tests Passed"></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/Tests-2699%20passed-brightgreen?logo=pytest&logoColor=white" alt="2699 Tests Passed"></a>
   <a href="https://github.com/aiming-lab/AutoResearchClaw"><img src="https://img.shields.io/badge/GitHub-AutoResearchClaw-181717?logo=github" alt="GitHub"></a>
   <a href="#openclaw-integration"><img src="https://img.shields.io/badge/OpenClaw-Compatible-ff4444?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==" alt="OpenClaw Compatible"></a>
   <a href="https://discord.gg/u4ksqW5P"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
@@ -37,7 +37,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/showcase/SHOWCASE.md">🏆 Paper Showcase</a> · <a href="docs/integration-guide.md">📖 Integration Guide</a> · <a href="https://discord.gg/u4ksqW5P">💬 Discord Community</a>
+  <a href="docs/showcase/SHOWCASE.md">🏆 Paper Showcase</a> · <a href="docs/HITL_GUIDE.md">🧑‍✈️ Co-Pilot Guide</a> · <a href="docs/integration-guide.md">📖 Integration Guide</a> · <a href="https://discord.gg/u4ksqW5P">💬 Discord Community</a>
 </p>
 
 ---
@@ -49,7 +49,7 @@
 </td>
 <td valign="middle">
 <b>🏆 Generated Paper Showcase</b><br><br>
-<b>8 papers across 8 domains</b> — math, statistics, biology, computing, NLP, RL, vision, robustness — generated fully autonomously with zero human intervention.<br><br>
+<b>8 papers across 8 domains</b> — math, statistics, biology, computing, NLP, RL, vision, robustness — generated fully autonomously or with Human-in-the-Loop co-pilot guidance.<br><br>
 <a href="docs/showcase/SHOWCASE.md"><img src="https://img.shields.io/badge/View_Full_Showcase_→-All_8_Papers-d73a49?style=for-the-badge" alt="View Showcase"></a>
 </td>
 </tr>
@@ -62,7 +62,8 @@
 ---
 
 ## 🔥 News
-- **[03/30/2026]** **Flexible Skill Loading** — AutoResearchClaw now supports loading open-source and custom skills from any discipline to further enhance your research experience. 20 pre-loaded skills are included as ready-to-use references, covering scientific writing, experiment design, chemistry, biology, and more — including an [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) agentic evolution skill contributed by the community. Load your own via `researchclaw skills install` or drop a `SKILL.md` into `.claude/skills/`. See [Skills Library](#-skills-library).
+- **[04/01/2026]** **v0.4.0** — **Human-in-the-Loop Co-Pilot System** — AutoResearchClaw is no longer purely autonomous. New HITL system adds 6 intervention modes (`full-auto`, `gate-only`, `checkpoint`, `step-by-step`, `co-pilot`, `custom`), per-stage policies, and deep human-AI collaboration. Includes: Idea Workshop for hypothesis co-creation, Baseline Navigator for experiment design review, Paper Co-Writer for collaborative drafting, SmartPause (confidence-driven dynamic intervention), ALHF intervention learning, anti-hallucination claim verification, cost budget guardrails, pipeline branching for parallel hypothesis exploration, and CLI commands (`attach`/`status`/`approve`/`reject`/`guide`). **[→ Full HITL Guide](docs/HITL_GUIDE.md)**
+- **[03/30/2026]** **Flexible Skill Loading** — AutoResearchClaw now supports loading open-source and custom skills from any discipline to further enhance your research experience. 19 pre-loaded skills are included as ready-to-use references, covering scientific writing, experiment design, chemistry, biology, and more — including an [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) agentic evolution skill contributed by the community. Load your own via `researchclaw skills install` or drop a `SKILL.md` into `.claude/skills/`. See [Skills Library](#-skills-library).
 - **[03/22/2026]** [v0.3.2](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.2) — **Cross-Platform Support + Major Stability** — AutoResearchClaw now runs on any ACP-compatible agent backend (Claude Code, Codex CLI, Copilot CLI, Gemini CLI, Kimi CLI) and supports messaging platforms (Discord, Telegram, Lark, WeChat) via OpenClaw bridge. New CLI-agent code generation backend delegates Stages 10 & 13 to external CLI agents with budget control and timeout management. Also includes anti-fabrication system (VerifiedRegistry + experiment diagnosis & repair loop), 100+ bug fixes, modular executor refactoring, `--resume` auto-detection, LLM retry hardening, and community-reported fixes. 
 - **[03/18/2026]** [v0.3.1](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.1) — **OpenCode Beast Mode + Community Contributions** — New "Beast Mode" routes complex code generation to [OpenCode](https://github.com/anomalyco/opencode) with automatic complexity scoring and graceful fallback. Added Novita AI provider support, thread-safety hardening, improved LLM output parsing robustness, and 20+ bug fixes from community PRs and internal audit.
 - **[03/17/2026]** [v0.3.0](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.0) — **MetaClaw Integration** — AutoResearchClaw now supports [MetaClaw](https://github.com/aiming-lab/MetaClaw) cross-run learning: pipeline failures → structured lessons → reusable skills, injected into all 23 stages. **+18.3%** robustness in controlled experiments. Opt-in (`metaclaw_bridge.enabled: true`), fully backward-compatible. See [Integration Guide](#-metaclaw-integration).
@@ -74,7 +75,11 @@
 ## ⚡ One Command. One Paper.
 
 ```bash
+# Fully autonomous — no human intervention
 pip install -e . && researchclaw setup && researchclaw init && researchclaw run --topic "Your research idea here" --auto-approve
+
+# Co-Pilot mode — collaborate with AI at key decision points
+researchclaw run --topic "Your research idea here" --mode co-pilot
 ```
 
 
@@ -82,9 +87,9 @@ pip install -e . && researchclaw setup && researchclaw init && researchclaw run 
 
 ## 🤔 What Is This?
 
-**You think it. AutoResearchClaw writes it.**
+**You think it. AutoResearchClaw writes it. You guide the key decisions.**
 
-Drop a research topic — get back a full academic paper with real literature from OpenAlex, Semantic Scholar & arXiv, hardware-aware sandbox experiments (GPU/MPS/CPU auto-detected), statistical analysis, multi-agent peer review, and conference-ready LaTeX targeting NeurIPS/ICML/ICLR. No babysitting. No copy-pasting. No hallucinated references.
+Drop a research topic — get back a full academic paper with real literature from OpenAlex, Semantic Scholar & arXiv, hardware-aware sandbox experiments (GPU/MPS/CPU auto-detected), statistical analysis, multi-agent peer review, and conference-ready LaTeX targeting NeurIPS/ICML/ICLR. Run it fully autonomous, or use **Co-Pilot mode** to guide the AI at critical decision points — choose research directions, review experiment designs, and co-write the paper. No hallucinated references.
 
 <table>
 <tr><td>📄</td><td><code>paper_draft.md</code></td><td>Full academic paper (Introduction, Related Work, Method, Experiments, Results, Conclusion)</td></tr>
@@ -98,7 +103,7 @@ Drop a research topic — get back a full academic paper with real literature fr
 <tr><td>📦</td><td><code>deliverables/</code></td><td>All final outputs in one folder — compile-ready for Overleaf</td></tr>
 </table>
 
-The pipeline runs **end-to-end without human intervention**. When experiments fail, it self-heals. When hypotheses don't hold, it pivots. When citations are fake, it kills them.
+The pipeline runs **end-to-end** — fully autonomous or with human-in-the-loop collaboration. When experiments fail, it self-heals. When hypotheses don't hold, it pivots. When citations are fake, it kills them. When you want to steer, it pauses and listens.
 
 🌍 **Run it anywhere.** AutoResearchClaw isn't locked to a single platform. Use it standalone via CLI, plug it into [OpenClaw](https://github.com/openclaw/openclaw), or wire it up through any ACP-compatible agent — 🤖 Claude Code, 💻 Codex CLI, 🐙 Copilot CLI, ♊ Gemini CLI, 🌙 Kimi CLI, you name it. And because OpenClaw bridges to messaging platforms, you can kick off a full research run from 💬 Discord, ✈️ Telegram, 🐦 Lark (飞书), 💚 WeChat, or wherever your team already hangs out. One topic in, one paper out — no matter where you type it.
 
@@ -157,11 +162,14 @@ experiment:
 
 | Capability | How It Works |
 |-----------|-------------|
+| **🧑‍✈️ Co-Pilot Mode** | 6 intervention modes — from fully autonomous to step-by-step. Guide the AI at critical decisions (hypotheses, baselines, paper writing) or let it run free. SmartPause auto-detects when human input would help. |
 | **🔄 PIVOT / REFINE Loop** | Stage 15 autonomously decides: PROCEED, REFINE (tweak params), or PIVOT (new direction). Artifacts auto-versioned. |
 | **🤖 Multi-Agent Debate** | Hypothesis generation, result analysis, and peer review each use structured multi-perspective debate. |
 | **🧬 Self-Learning** | Lessons extracted per run (decision rationale, runtime warnings, metric anomalies) with 30-day time-decay. Future runs learn from past mistakes. |
 | **📚 Knowledge Base** | Every run builds structured KB across 6 categories (decisions, experiments, findings, literature, questions, reviews). |
 | **🛡️ Sentinel Watchdog** | Background quality monitor: NaN/Inf detection, paper-evidence consistency, citation relevance scoring, anti-fabrication guard. |
+| **🔍 Claim Verification** | Inline fact-checking: extracts claims from AI-generated text and cross-references against collected literature. Flags ungrounded citations and fabricated numbers. |
+| **🌿 Branch Exploration** | Fork the pipeline to explore multiple research directions simultaneously, compare results side-by-side, and merge the best path forward. |
 
 ---
 
@@ -249,7 +257,7 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 
 | Method | How |
 |--------|-----|
-| **Standalone CLI** | `researchclaw setup` → `researchclaw init` → `researchclaw run --topic "..." --auto-approve` |
+| **Standalone CLI** | `researchclaw run --topic "..." --auto-approve` (autonomous) or `--mode co-pilot` (collaborative) |
 | **Python API** | `from researchclaw.pipeline import Runner; Runner(config).run()` |
 | **Claude Code** | Reads `RESEARCHCLAW_CLAUDE.md` — just say *"Run research on [topic]"* |
 | **Copilot CLI** | `researchclaw run --topic "..."` with `llm.acp.agent: "gh"` |
@@ -283,6 +291,8 @@ Phase D: Experiment Design         Phase H: Finalization
 ```
 
 > **Gate stages** (5, 9, 20) pause for human approval or auto-approve with `--auto-approve`. On rejection, the pipeline rolls back.
+
+> **Co-Pilot mode** (`--mode co-pilot`): Deep human-AI collaboration at Stages 7-8 (Idea Workshop), Stage 9 (Baseline Navigator), and Stages 16-17 (Paper Co-Writer). Other stages auto-execute with SmartPause monitoring.
 
 > **Decision loops**: Stage 15 can trigger REFINE (→ Stage 13) or PIVOT (→ Stage 8), with automatic artifact versioning.
 
@@ -318,6 +328,122 @@ Phase D: Experiment Design         Phase H: Finalization
 | **📐 Template Switching** | `neurips_2025`, `iclr_2026`, `icml_2026` — Markdown → LaTeX with math, tables, figures, cross-refs, `\cite{}` |
 | **🛡️ Anti-Fabrication** | VerifiedRegistry enforces ground-truth experiment data in papers. Auto-diagnoses failed experiments and repairs them before writing. Unverified numbers sanitized. |
 | **🚦 Quality Gates** | 3 human-in-the-loop gates (Stages 5, 9, 20) with rollback. Skip with `--auto-approve`. |
+| **🧑‍✈️ HITL Co-Pilot** | 6 intervention modes with per-stage policies. Idea Workshop, Baseline Navigator, Paper Co-Writer for deep collaboration. SmartPause, cost guardrails, escalation policies, and intervention learning for production safety. CLI/WebSocket/MCP adapters. |
+| **💰 Cost Guardrails** | Budget monitoring with configurable threshold alerts (50%/80%/100%). Pipeline auto-pauses when cost exceeds budget. |
+| **🔐 Reproducibility** | SHA256 checksums for all stage artifacts. Immutable manifests for verification. Multi-level undo with versioned snapshots. |
+
+---
+
+## 🧑‍✈️ Human-in-the-Loop Co-Pilot
+
+**AutoResearchClaw v0.4.0 introduces a complete Human-in-the-Loop (HITL) system** that transforms the pipeline from purely autonomous to a human-AI collaborative research engine. Choose your level of involvement:
+
+### Intervention Modes
+
+| Mode | Command | What It Does |
+|------|---------|-------------|
+| **Full Auto** | `--auto-approve` | Original behavior — no human intervention |
+| **Gate Only** | `--mode gate-only` | Pause at 3 gate stages (5, 9, 20) for approval |
+| **Checkpoint** | `--mode checkpoint` | Pause at each phase boundary (8 checkpoints) |
+| **Co-Pilot** | `--mode co-pilot` | Deep collaboration at critical stages, auto elsewhere |
+| **Step-by-Step** | `--mode step-by-step` | Pause after every stage — learn the pipeline |
+| **Express** | `--mode express` | Quick review — only 3 most critical gates |
+| **Custom** | `--mode custom` | Define per-stage policies via `stage_policies` config |
+
+### Co-Pilot Workflow
+
+```
+You: researchclaw run --topic "Quantum noise as neural network regularization" --mode co-pilot
+
+Pipeline runs Stages 1-7 automatically...
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │  HITL | Stage 08: HYPOTHESIS_GEN                            │
+  │  Post-stage review                                          │
+  │                                                             │
+  │  Hypotheses mentioned: 3                                    │
+  │  Novelty score: 0.72 (moderate)                             │
+  │                                                             │
+  │  [a] Approve  [r] Reject  [e] Edit  [c] Collaborate         │
+  │  [i] Inject guidance  [v] View output  [q] Abort            │
+  └─────────────────────────────────────────────────────────────┘
+
+You: c  (start collaborative chat)
+You: Hypothesis 3 is interesting but needs Dropout/Label Smoothing as baselines
+AI:  Updated — added Dropout, Label Smoothing, MixUp, CutMix as baselines...
+You: approve
+
+Pipeline continues with your refined hypothesis...
+```
+
+### CLI Commands
+
+```bash
+# Start with HITL mode
+researchclaw run --topic "..." --mode co-pilot
+
+# Attach to a paused pipeline (from another terminal)
+researchclaw attach artifacts/rc-2026-xxx
+
+# Check pipeline and HITL status
+researchclaw status artifacts/rc-2026-xxx
+
+# Approve/reject from another terminal or script
+researchclaw approve artifacts/rc-2026-xxx --message "LGTM"
+researchclaw reject artifacts/rc-2026-xxx --reason "Missing key baseline"
+
+# Inject guidance for a stage (even before it runs)
+researchclaw guide artifacts/rc-2026-xxx --stage 9 --message "Use ResNet-50 as primary baseline"
+```
+
+### Key Capabilities
+
+| Feature | Description |
+|---------|------------|
+| **Idea Workshop** | Brainstorm, evaluate, and refine hypotheses collaboratively (Stage 7-8) |
+| **Baseline Navigator** | AI suggests baselines + human adds/removes + reproducibility checklist (Stage 9) |
+| **Paper Co-Writer** | Section-by-section drafting with human editing and AI polishing (Stage 16-19) |
+| **SmartPause** | Confidence-driven dynamic pausing — auto-detects when human input would help |
+| **Claim Verification** | Inline fact-checking against collected literature — flags ungrounded claims |
+| **Cost Guardrails** | Budget monitoring with 50%/80%/100% threshold alerts |
+| **Intervention Learning** | ALHF — learns from your review patterns to optimize future pause decisions |
+| **Branch Exploration** | Fork pipeline to explore multiple hypotheses, compare, merge the best |
+| **Escalation Policy** | Tiered notification (terminal → Slack → email → auto-halt) when unattended |
+| **3 Adapters** | CLI (terminal), WebSocket (web dashboard), MCP (external agents) |
+
+### Configuration
+
+```yaml
+# config.arc.yaml
+hitl:
+  enabled: true
+  mode: co-pilot                     # full-auto | gate-only | checkpoint | co-pilot | custom
+  cost_budget_usd: 50.0              # Pause when cost exceeds budget (0 = no limit)
+
+  notifications:
+    on_pause: true
+    on_quality_drop: true
+    channels: ["terminal"]            # terminal | slack | webhook
+
+  timeouts:
+    default_human_timeout_sec: 86400  # 24h default wait
+    auto_proceed_on_timeout: false
+
+  collaboration:
+    max_chat_turns: 50
+    save_chat_history: true
+
+  # Per-stage custom policies (optional, for 'custom' mode)
+  stage_policies:
+    8: { require_approval: true, enable_collaboration: true }
+    9: { require_approval: true, allow_edit_output: true }
+```
+
+### Backward Compatibility
+
+- **Default: OFF.** Without `hitl.enabled: true` or `--mode`, the pipeline behaves exactly as before.
+- **`--auto-approve` still works.** It overrides HITL mode.
+- **All 2,699 existing tests pass** with HITL code present.
 
 ---
 
@@ -388,7 +514,7 @@ In controlled A/B experiments (same topic, same LLM, same configuration):
 
 - **Default: OFF.** If `metaclaw_bridge` is absent or `enabled: false`, the pipeline behaves exactly as before.
 - **No new dependencies.** MetaClaw is optional — the core pipeline works without it.
-- **All 1,823 existing tests pass** with the integration code present.
+- **All 2,699 existing tests pass** with the integration code present.
 
 ---
 
@@ -550,6 +676,23 @@ export:
 prompts:
   custom_file: ""                  # Path to custom prompts YAML (empty = defaults)
 
+# === HITL Co-Pilot (NEW in v0.4.0) ===
+hitl:
+  enabled: false                     # Set to true to enable HITL
+  mode: co-pilot                     # full-auto | gate-only | checkpoint | step-by-step | co-pilot | custom
+  cost_budget_usd: 0.0              # Cost limit in USD (0 = no limit)
+  notifications:
+    on_pause: true                   # Notify when pipeline pauses
+    on_quality_drop: true            # Notify on quality issues
+    channels: ["terminal"]           # terminal | slack | webhook
+  timeouts:
+    default_human_timeout_sec: 86400 # Wait up to 24h for human input
+    auto_proceed_on_timeout: false   # If true, auto-approve on timeout
+  collaboration:
+    max_chat_turns: 50               # Max turns per collaboration session
+    save_chat_history: true          # Persist chat logs
+  stage_policies: {}                 # Per-stage overrides (for 'custom' mode)
+
 # === Security ===
 security:
   hitl_required_stages: [5, 9, 20] # Stages requiring human approval
@@ -619,7 +762,7 @@ If you find AutoResearchClaw useful, please cite:
 
 ```bibtex
 @misc{liu2026autoresearchclaw,
-  author       = {Liu, Jiaqi and Xia, Peng and Han, Siwei and Qiu, Shi and Zhang, Letian and Chen, Guiming  and Tu, Haoqin and Yang, Xinyu and and Zhou, Jiawei and Zhu, Hongtu and Li, Yun and Zhou, Yuyin and Zheng, Zeyu and Xie, Cihang and Ding, Mingyu and Yao, Huaxiu},
+  author       = {Liu, Jiaqi and Xia, Peng and Han, Siwei and Qiu, Shi and Zhang, Letian and Chen, Guiming and Tu, Haoqin and Yang, Xinyu and Zhou, Jiawei and Zhu, Hongtu and Li, Yun and Zhou, Yuyin and Zheng, Zeyu and Xie, Cihang and Ding, Mingyu and Yao, Huaxiu},
   title        = {AutoResearchClaw: Fully Autonomous Research from Idea to Paper},
   year         = {2026},
   organization = {GitHub},

@@ -723,6 +723,8 @@ class RCConfig:
         default_factory=QualityAssessorConfig
     )
     calendar: CalendarConfig = field(default_factory=CalendarConfig)
+    # HITL Co-Pilot System
+    hitl: object = field(default=None)  # HITLConfig (lazy import avoids circular dep)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -767,6 +769,7 @@ class RCConfig:
         copilot_data = data.get("copilot") or {}
         quality_assessor_data = data.get("quality_assessor") or {}
         calendar_data = data.get("calendar") or {}
+        hitl_data = data.get("hitl") or {}
 
         return cls(
             project=ProjectConfig(
@@ -853,6 +856,7 @@ class RCConfig:
             copilot=_parse_copilot_config(copilot_data),
             quality_assessor=_parse_quality_assessor_config(quality_assessor_data),
             calendar=_parse_calendar_config(calendar_data),
+            hitl=_parse_hitl_config(hitl_data),
         )
 
     @classmethod
@@ -1402,6 +1406,18 @@ def _parse_calendar_config(data: dict[str, Any]) -> CalendarConfig:
         reminder_days_before=reminder,
         auto_plan=bool(data.get("auto_plan", True)),
     )
+
+
+def _parse_hitl_config(data: dict[str, Any]) -> object:
+    """Parse HITL config section. Returns HITLConfig or None."""
+    if not data:
+        return None
+    try:
+        from researchclaw.hitl.config import HITLConfig
+
+        return HITLConfig.from_dict(data)
+    except Exception:
+        return None
 
 
 def load_config(

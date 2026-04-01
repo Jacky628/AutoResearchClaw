@@ -2075,6 +2075,52 @@ Generated: {_utcnow_iso()}
     # Validate draft quality (section balance + bullet density)
     _validate_draft_quality(draft, stage_dir=stage_dir)
 
+    # --- HITL: Read human guidance for paper draft ---
+    guidance_file = stage_dir / "hitl_guidance.md"
+    if guidance_file.exists():
+        try:
+            guidance = guidance_file.read_text(encoding="utf-8").strip()
+            if guidance and llm is not None:
+                draft_path = stage_dir / "paper_draft.md"
+                if draft_path.exists():
+                    current_draft = draft_path.read_text(encoding="utf-8")
+                    logger.info("Applying HITL guidance to paper draft")
+                    resp = llm.chat(
+                        [{"role": "user", "content": (
+                            f"The human researcher provided this guidance for the paper:\n\n"
+                            f"{guidance}\n\n"
+                            f"Apply these suggestions to improve the following draft. "
+                            f"Preserve all existing content and citations. "
+                            f"Only make changes that align with the guidance.\n\n"
+                            f"## Current Draft\n{current_draft[:8000]}"
+                        )}],
+                        max_tokens=8192,
+                    )
+                    draft_path.write_text(resp.content, encoding="utf-8")
+        except Exception:
+            logger.debug("HITL guidance application to draft failed (non-blocking)")
+
+    # --- HITL: Paper Co-Writer data persistence ---
+    try:
+        from researchclaw.hitl.workshops.paper import PaperCoWriter
+
+        writer = PaperCoWriter(run_dir, llm_client=llm)
+        writer.load_outline()
+        draft_path = stage_dir / "paper_draft.md"
+        if draft_path.exists():
+            draft_text = draft_path.read_text(encoding="utf-8")
+            for section in writer.sections:
+                # Extract section content from draft
+                import re as _re_pw
+                pattern = rf"(?:^|\n)##?\s*{_re_pw.escape(section.name)}.*?\n(.*?)(?=\n##?\s|\Z)"
+                match = _re_pw.search(draft_text, _re_pw.DOTALL)
+                if match:
+                    section.content = match.group(1).strip()
+                    section.status = "ai_draft"
+        writer.save()
+    except Exception:
+        pass
+
     return StageResult(
         stage=Stage.PAPER_DRAFT,
         status=StageStatus.DONE,

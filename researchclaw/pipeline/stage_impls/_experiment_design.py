@@ -442,6 +442,57 @@ def _execute_experiment_design(
                 len(_ablations), _ablation_budget,
             )
 
+    # --- HITL: Read human guidance if available ---
+    guidance_file = stage_dir / "hitl_guidance.md"
+    if guidance_file.exists():
+        try:
+            guidance = guidance_file.read_text(encoding="utf-8").strip()
+            if guidance and llm is not None and isinstance(plan, dict):
+                logger.info("Applying HITL guidance to experiment design")
+                resp = llm.chat(
+                    [{"role": "user", "content": (
+                        f"The human researcher provided this guidance for "
+                        f"the experiment design:\n\n{guidance}\n\n"
+                        f"Current experiment plan:\n"
+                        f"```yaml\n{yaml.dump(plan, default_flow_style=False)}\n```\n\n"
+                        f"Update the YAML plan to incorporate the guidance. "
+                        f"Return ONLY the updated YAML."
+                    )}],
+                    max_tokens=4096,
+                )
+                updated = _extract_yaml_block(resp.content)
+                try:
+                    parsed_update = yaml.safe_load(updated)
+                    if isinstance(parsed_update, dict):
+                        plan = parsed_update
+                except yaml.YAMLError:
+                    pass
+        except Exception:
+            logger.debug("HITL guidance application failed (non-blocking)")
+
+    # --- HITL: Baseline Navigator data persistence ---
+    try:
+        from researchclaw.hitl.workshops.baseline import BaselineNavigator, BaselineCandidate
+
+        nav = BaselineNavigator(run_dir, llm_client=llm)
+        if isinstance(plan, dict):
+            baselines = plan.get("baselines", [])
+            if isinstance(baselines, list):
+                for b in baselines:
+                    if isinstance(b, dict):
+                        nav.baselines.append(BaselineCandidate(
+                            name=b.get("name", str(b)),
+                            description=b.get("description", ""),
+                        ))
+                    elif isinstance(b, str):
+                        nav.baselines.append(BaselineCandidate(name=b))
+            metrics = plan.get("metrics", [])
+            if isinstance(metrics, list):
+                nav.metrics = [str(m) for m in metrics]
+        nav.save()
+    except Exception:
+        pass
+
     (stage_dir / "exp_plan.yaml").write_text(
         yaml.dump(plan, default_flow_style=False, allow_unicode=True),
         encoding="utf-8",

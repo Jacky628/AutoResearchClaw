@@ -180,6 +180,323 @@ from researchclaw.pipeline.stage_impls._review_publish import (  # noqa: E402
 )
 
 
+def _get_hitl_session(adapters: AdapterBundle) -> Any:
+    """Retrieve the HITLSession from the adapter bundle (if any)."""
+    return getattr(adapters, "hitl", None)
+
+
+def _run_hitl_pre_stage(
+    stage: Stage, run_dir: Path, adapters: AdapterBundle
+) -> StageResult | None:
+    """HITL pre-stage hook: pause before execution if policy requires.
+
+    Returns a StageResult to skip the stage, or None to proceed normally.
+    """
+    session = _get_hitl_session(adapters)
+    if session is None:
+        return None
+
+    stage_num = int(stage)
+    if not session.should_pause_before(stage_num):
+        return None
+
+    from researchclaw.hitl.intervention import HumanAction, PauseReason
+
+    # Collect output file names from contract
+    contract = CONTRACTS.get(stage)
+    output_files = tuple(contract.output_files) if contract else ()
+
+    session.pause(
+        stage_num,
+        stage.name,
+        PauseReason.PRE_STAGE,
+        context_summary=f"About to execute {stage.name}",
+        output_files=output_files,
+    )
+    human_input = session.wait_for_human()
+
+    if human_input.action == HumanAction.SKIP:
+        return StageResult(
+            stage=stage,
+            status=StageStatus.DONE,
+            artifacts=(),
+            decision="proceed",
+        )
+    if human_input.action == HumanAction.ABORT:
+        return StageResult(
+            stage=stage,
+            status=StageStatus.FAILED,
+            artifacts=(),
+            error="Aborted by user",
+            decision="abort",
+        )
+
+    # Inject guidance if provided
+    if human_input.guidance:
+        stage_dir = run_dir / f"stage-{stage_num:02d}"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        guidance_file = stage_dir / "hitl_guidance.md"
+        guidance_file.write_text(human_input.guidance, encoding="utf-8")
+
+    return None  # Proceed with execution
+
+
+def _run_hitl_post_stage(
+    stage: Stage, result: StageResult, run_dir: Path, adapters: AdapterBundle
+) -> StageResult:
+    """HITL post-stage hook: pause after execution for review.
+
+    Returns the (possibly modified) StageResult.
+    """
+    session = _get_hitl_session(adapters)
+    if session is None:
+        return result
+
+    # --- CostGuard: check budget thresholds ---
+    stage_num = int(stage)
+    try:
+        from researchclaw.hitl.cost_guard import CostGuard
+
+        budget = 0.0
+        if hasattr(session, "config") and session.config:
+            budget = getattr(session.config, "cost_budget_usd", 0.0) or 0.0
+        guard = CostGuard(budget_usd=budget)
+        if budget > 0 and guard.should_pause(run_dir):
+            from researchclaw.hitl.intervention import HumanAction, PauseReason
+
+            session.pause(
+                stage_num,
+                stage.name,
+                PauseReason.COST_BUDGET_EXCEEDED,
+                context_summary=f"Cost budget alert: {guard.format_display(run_dir)}",
+            )
+            human_input = session.wait_for_human()
+            if human_input.action == HumanAction.ABORT:
+                return StageResult(
+                    stage=stage,
+                    status=StageStatus.FAILED,
+                    artifacts=result.artifacts,
+                    error="Aborted due to cost",
+                    decision="abort",
+                )
+    except Exception as _cg_exc:
+        logger.debug("CostGuard check skipped: %s", _cg_exc)
+
+    _smart_pause_triggered = False
+    if not session.should_pause_after(stage_num):
+        # Policy doesn't require pause, but SmartPause might
+        try:
+            from researchclaw.hitl.smart_pause import SmartPause
+
+            sp = SmartPause(threshold=0.7, run_dir=run_dir)
+            q_score = None
+            stage_dir = run_dir / f"stage-{stage_num:02d}"
+            prm_file = stage_dir / "prm_score.json"
+            if prm_file.exists():
+                import json as _sp_json
+
+                prm_data = _sp_json.loads(prm_file.read_text(encoding="utf-8"))
+                q_score = prm_data.get("prm_score")
+            should_smart_pause, _signal = sp.should_pause(
+                stage_num, stage.name, quality_score=q_score
+            )
+            if not should_smart_pause:
+                return result
+            # SmartPause triggered — fall through to pause logic
+            _smart_pause_triggered = True
+        except Exception as _sp_exc:
+            logger.debug("SmartPause check skipped: %s", _sp_exc)
+            return result
+
+    from researchclaw.hitl.intervention import HumanAction, PauseReason
+
+    # Determine pause reason
+    reason = PauseReason.CONFIDENCE_LOW if _smart_pause_triggered else PauseReason.POST_STAGE
+    policy = session.get_policy(stage_num)
+    if policy.require_approval:
+        reason = PauseReason.GATE_APPROVAL
+    if (
+        policy.min_quality_score > 0
+        and result.status == StageStatus.DONE
+    ):
+        # Check quality score from stage health
+        stage_dir = run_dir / f"stage-{stage_num:02d}"
+        try:
+            import json as _json_mod
+            health_file = stage_dir / "stage_health.json"
+            if health_file.exists():
+                health = _json_mod.loads(health_file.read_text(encoding="utf-8"))
+                prm_file = stage_dir / "prm_score.json"
+                if prm_file.exists():
+                    prm = _json_mod.loads(prm_file.read_text(encoding="utf-8"))
+                    score = prm.get("prm_score", 1.0)
+                    if score < policy.min_quality_score:
+                        reason = PauseReason.QUALITY_BELOW_THRESHOLD
+        except (OSError, ValueError):
+            pass
+
+    # Build context summary from stage artifacts
+    contract = CONTRACTS.get(stage)
+    output_files = tuple(contract.output_files) if contract else ()
+    context_lines = [
+        f"Stage {stage_num} ({stage.name}) completed: {result.status.value}",
+    ]
+    if result.artifacts:
+        context_lines.append(f"Artifacts: {', '.join(result.artifacts)}")
+    if result.error:
+        context_lines.append(f"Error: {result.error}")
+
+    # Read first 500 chars of key output files for summary
+    stage_dir = run_dir / f"stage-{stage_num:02d}"
+    for fname in output_files[:3]:
+        fpath = stage_dir / fname
+        if fpath.is_file():
+            try:
+                text = fpath.read_text(encoding="utf-8")[:500]
+                context_lines.append(f"\n--- {fname} ---\n{text}")
+            except (OSError, UnicodeDecodeError):
+                pass
+
+    session.pause(
+        stage_num,
+        stage.name,
+        reason,
+        context_summary="\n".join(context_lines),
+        output_files=output_files,
+    )
+    human_input = session.wait_for_human()
+
+    if human_input.action == HumanAction.APPROVE:
+        return result
+
+    if human_input.action == HumanAction.REJECT:
+        return StageResult(
+            stage=stage,
+            status=StageStatus.REJECTED,
+            artifacts=result.artifacts,
+            error=human_input.message or "Rejected by human reviewer",
+            decision="pivot",
+            evidence_refs=result.evidence_refs,
+        )
+
+    if human_input.action == HumanAction.EDIT:
+        # Human already edited files via the adapter
+        return result
+
+    if human_input.action == HumanAction.SKIP:
+        return StageResult(
+            stage=stage,
+            status=StageStatus.DONE,
+            artifacts=result.artifacts,
+            decision="proceed",
+            evidence_refs=result.evidence_refs,
+        )
+
+    if human_input.action == HumanAction.ABORT:
+        return StageResult(
+            stage=stage,
+            status=StageStatus.FAILED,
+            artifacts=result.artifacts,
+            error="Aborted by user",
+            decision="abort",
+            evidence_refs=result.evidence_refs,
+        )
+
+    if human_input.action == HumanAction.COLLABORATE:
+        session.enter_collaboration(stage_num, stage.name)
+        try:
+            result = _run_collaboration_loop(
+                stage, result, run_dir, adapters, session
+            )
+        except Exception as _collab_exc:
+            logger.warning("Collaboration failed: %s", _collab_exc)
+        session.exit_collaboration()
+        return result
+
+    if human_input.action == HumanAction.INJECT:
+        # Save guidance for potential re-run
+        if human_input.guidance:
+            guidance_file = stage_dir / "hitl_guidance.md"
+            guidance_file.write_text(human_input.guidance, encoding="utf-8")
+        return result
+
+    return result
+
+
+def _run_collaboration_loop(
+    stage: Stage,
+    result: StageResult,
+    run_dir: Path,
+    adapters: AdapterBundle,
+    session: Any,
+) -> StageResult:
+    """Run an interactive collaboration loop for a stage.
+
+    The human and AI take turns discussing and refining the stage output.
+    The loop continues until the human approves or aborts.
+    """
+    from researchclaw.hitl.collaboration import CollaborationSession
+    from researchclaw.hitl.intervention import HumanAction, PauseReason
+
+    stage_num = int(stage)
+    contract = CONTRACTS.get(stage)
+    output_files = tuple(contract.output_files) if contract else ()
+
+    collab = CollaborationSession(run_dir=run_dir)
+
+    # Try to get LLM client and topic
+    llm_client = None
+    topic = ""
+    try:
+        from researchclaw.llm.client import LLMClient
+        # LLM client is created fresh for collaboration
+        llm_client = None  # Will use chat without LLM if unavailable
+        topic = getattr(
+            getattr(adapters, "_config", None), "research", None
+        )
+        topic = topic.topic if topic else "Research"
+    except Exception:
+        topic = "Research"
+
+    collab.initialize(
+        stage_num, stage.name, topic, run_dir, artifacts=output_files,
+    )
+
+    print(f"\n  Entering collaboration mode for Stage {stage_num} ({stage.name})")
+    print("  Type your messages. Enter 'done' to finalize, 'abort' to cancel.\n")
+
+    # Simple collaboration loop via stdin
+    while True:
+        try:
+            user_input = input("  You > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() in ("done", "approve", "finalize"):
+            collab.finalize()
+            print("  Collaboration finalized.")
+            break
+
+        if user_input.lower() in ("abort", "quit", "cancel"):
+            print("  Collaboration cancelled.")
+            break
+
+        collab.human_says(user_input)
+
+        # Get AI response
+        if llm_client is not None:
+            response = collab.ai_responds(llm_client)
+            print(f"\n  AI > {response}\n")
+        else:
+            print("  AI > [LLM not available for chat — your input is recorded]\n")
+
+    return result
+
+
 _STAGE_EXECUTORS: dict[Stage, Callable[..., StageResult]] = {
     Stage.TOPIC_INIT: _execute_topic_init,
     Stage.PROBLEM_DECOMPOSE: _execute_problem_decompose,
@@ -218,6 +535,11 @@ def execute_stage(
 ) -> StageResult:
     """Execute one pipeline stage, validate outputs, and apply gate logic."""
 
+    # --- HITL pre-stage hook ---
+    hitl_result = _run_hitl_pre_stage(stage, run_dir, adapters)
+    if hitl_result is not None:
+        return hitl_result
+
     stage_dir = run_dir / f"stage-{int(stage):02d}"
     stage_dir.mkdir(parents=True, exist_ok=True)
     _t_health_start = _time.monotonic()
@@ -249,7 +571,12 @@ def execute_stage(
 
     llm = None
     try:
-        llm = create_llm_client(config)
+        if config.llm.provider == "acp":
+            llm = create_llm_client(config)
+        else:
+            candidate = LLMClient.from_rc_config(config)
+            if candidate.config.base_url and candidate.config.api_key:
+                llm = candidate
     except Exception as _llm_exc:  # noqa: BLE001
         logger.warning("LLM client creation failed: %s", _llm_exc)
         llm = None
@@ -406,5 +733,8 @@ def execute_stage(
         )
     except OSError:
         pass
+
+    # --- HITL post-stage hook ---
+    result = _run_hitl_post_stage(stage, result, run_dir, adapters)
 
     return result

@@ -2,7 +2,7 @@
   <img src="../image/logo.png" width="700" alt="AutoResearchClaw Logo">
 </p>
 
-<h2 align="center"><b>聊一个想法。出一篇论文。全自动 & 自演化。</b></h2>
+<h2 align="center"><b>聊一个想法。出一篇论文。全自动、协作 & 自演化。</b></h2>
 
 
 
@@ -18,7 +18,7 @@
 <p align="center">
   <a href="../LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
-  <a href="#测试"><img src="https://img.shields.io/badge/Tests-1823%20passed-brightgreen?logo=pytest&logoColor=white" alt="1823 Tests Passed"></a>
+  <a href="#测试"><img src="https://img.shields.io/badge/Tests-2699%20passed-brightgreen?logo=pytest&logoColor=white" alt="2699 Tests Passed"></a>
   <a href="https://github.com/aiming-lab/AutoResearchClaw"><img src="https://img.shields.io/badge/GitHub-AutoResearchClaw-181717?logo=github" alt="GitHub"></a>
   <a href="#openclaw-集成"><img src="https://img.shields.io/badge/OpenClaw-Compatible-ff4444?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==" alt="OpenClaw Compatible"></a>
   <a href="https://discord.gg/u4ksqW5P"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
@@ -38,7 +38,7 @@
 </p>
 
 <p align="center">
-  <a href="showcase/SHOWCASE.md">🏆 论文展示</a> · <a href="integration-guide.md">📖 集成指南</a> · <a href="https://discord.gg/u4ksqW5P">💬 Discord 社区</a>
+  <a href="showcase/SHOWCASE.md">🏆 论文展示</a> · <a href="HITL_GUIDE.md">🧑‍✈️ 协同引导指南</a> · <a href="integration-guide.md">📖 集成指南</a> · <a href="https://discord.gg/u4ksqW5P">💬 Discord 社区</a>
 </p>
 
 ---
@@ -50,7 +50,7 @@
 </td>
 <td valign="middle">
 <b>🏆 生成论文展示</b><br><br>
-<b>8 篇论文覆盖 8 个领域</b> — 数学、统计、生物、计算、NLP、RL、视觉、鲁棒性 — 完全自主生成，零人工干预。<br><br>
+<b>8 篇论文覆盖 8 个领域</b> — 数学、统计、生物、计算、NLP、RL、视觉、鲁棒性 — 完全自主生成，或通过人机协作的 Co-Pilot 引导。<br><br>
 <a href="showcase/SHOWCASE.md"><img src="https://img.shields.io/badge/View_Full_Showcase_→-All_8_Papers-d73a49?style=for-the-badge" alt="View Showcase"></a>
 </td>
 </tr>
@@ -63,6 +63,8 @@
 ---
 
 ## 🔥 News
+- **[04/01/2026]** **v0.4.0** — **人机协作 Co-Pilot 系统** — AutoResearchClaw 不再是纯自动化工具。新增 HITL 系统支持 6 种干预模式（`full-auto`、`gate-only`、`checkpoint`、`step-by-step`、`co-pilot`、`custom`），支持逐阶段策略配置与深度人机协作。包括：Idea Workshop（假设共创）、Baseline Navigator（实验设计审核）、Paper Co-Writer（协作撰写论文）、SmartPause（基于置信度的动态暂停）、ALHF 干预学习、反幻觉声明验证、成本预算护栏、流水线分支并行探索假设，以及 CLI 命令（`attach`/`status`/`approve`/`reject`/`guide`）。**[→ 完整 HITL 指南](HITL_GUIDE.md)**
+- **[03/30/2026]** **灵活技能加载** — AutoResearchClaw 现已支持从任何学科加载开源和自定义技能。内置 19 个预加载技能作为即用参考，覆盖科学写作、实验设计、化学、生物等领域，包括社区贡献的 [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) 自进化技能。通过 `researchclaw skills install` 加载或将 `SKILL.md` 放入 `.claude/skills/`。参见[技能库](#-技能库)。
 - **[03/22/2026]** [v0.3.2](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.2) — **跨平台支持 + 重大稳定性更新** — AutoResearchClaw 现已支持任何 ACP 兼容的 AI 代理后端（Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Kimi CLI），并通过 OpenClaw 桥接支持消息平台（Discord、Telegram、飞书、微信）。新增 CLI-agent 代码生成后端，将 Stage 10 和 13 委托给外部 CLI agent，支持预算控制和超时管理。同时包含反数据捏造系统（VerifiedRegistry + 实验诊断与修复循环），100+ 个 bug 修复，模块化 executor 重构，`--resume` 自动检测，LLM 重试加固，以及社区反馈修复。
 - **[03/18/2026]** [v0.3.1](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.1) — **OpenCode Beast Mode + Community Contributions** — New "Beast Mode" routes complex code generation to [OpenCode](https://github.com/anomalyco/opencode) with automatic complexity scoring and graceful fallback. Added Novita AI provider support, thread-safety hardening, improved LLM output parsing robustness, and 20+ bug fixes from community PRs and internal audit.
 - **[03/17/2026]** [v0.3.0](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.0) — **MetaClaw Integration** — AutoResearchClaw now supports [MetaClaw](https://github.com/aiming-lab/MetaClaw) cross-run learning: pipeline failures → structured lessons → reusable skills, injected into all 23 stages. **+18.3%** robustness in controlled experiments. Opt-in (`metaclaw_bridge.enabled: true`), fully backward-compatible. See [Integration Guide](#-metaclaw-integration).
@@ -74,7 +76,11 @@
 ## ⚡ 一行命令。一篇论文。
 
 ```bash
+# 完全自动 — 无需人工干预
 pip install -e . && researchclaw setup && researchclaw init && researchclaw run --topic "Your research idea here" --auto-approve
+
+# Co-Pilot 模式 — 在关键决策点与 AI 协作
+researchclaw run --topic "Your research idea here" --mode co-pilot
 ```
 
 
@@ -82,9 +88,9 @@ pip install -e . && researchclaw setup && researchclaw init && researchclaw run 
 
 ## 🤔 这是什么？
 
-**你有一个灵感，AutoResearchClaw 把它写出来。**
+**你有一个灵感，AutoResearchClaw 把它写出来。你来引导关键决策。**
 
-输入一个研究主题——获得一篇完整的学术论文，包含来自 OpenAlex、Semantic Scholar 和 arXiv 的真实文献，硬件感知沙箱实验（自动检测 GPU/MPS/CPU），统计分析，多 Agent 同行评审，以及面向 NeurIPS/ICML/ICLR 的顶会级 LaTeX。不需要盯着看。不需要复制粘贴。不会出现幻觉引用。
+输入一个研究主题——获得一篇完整的学术论文，包含来自 OpenAlex、Semantic Scholar 和 arXiv 的真实文献，硬件感知沙箱实验（自动检测 GPU/MPS/CPU），统计分析，多 Agent 同行评审，以及面向 NeurIPS/ICML/ICLR 的顶会级 LaTeX。完全自主运行，或使用 **Co-Pilot 模式**在关键决策点引导 AI——选择研究方向、审核实验设计、协作撰写论文。不会出现幻觉引用。
 
 <table>
 <tr><td>📄</td><td><code>paper_draft.md</code></td><td>完整学术论文（引言、相关工作、方法、实验、结果、结论）</td></tr>
@@ -98,7 +104,7 @@ pip install -e . && researchclaw setup && researchclaw init && researchclaw run 
 <tr><td>📦</td><td><code>deliverables/</code></td><td>所有最终产出集中在一个文件夹——可直接上传 Overleaf 编译</td></tr>
 </table>
 
-流水线**端到端无需人工介入**运行。实验失败时自动修复。假设不成立时自主转向。引用是假的？自动删除。
+流水线**端到端运行** — 完全自动或人机协作。实验失败时自动修复。假设不成立时自主转向。引用是假的？自动删除。你想介入？它会暂停等候。
 
 🌍 **随处可用。** AutoResearchClaw 不绑定任何单一平台。你可以通过 CLI 独立运行，接入 [OpenClaw](https://github.com/openclaw/openclaw)，或对接任何 ACP 兼容的 AI 代理 —— 🤖 Claude Code、💻 Codex CLI、🐙 Copilot CLI、♊ Gemini CLI、🌙 Kimi CLI，应有尽有。而且，借助 OpenClaw 的消息桥接能力，你还可以从 💬 Discord、✈️ Telegram、🐦 飞书、💚 微信，或任何你团队日常使用的平台发起一次完整的研究。输入一个课题，输出一篇论文 —— 无论你在哪里输入。
 
@@ -157,11 +163,14 @@ experiment:
 
 | 能力 | 工作原理 |
 |------|----------|
+| **🧑‍✈️ Co-Pilot 模式** | 6 种干预模式 — 从完全自动到逐步引导。在关键决策（假设、基线、论文写作）时引导 AI，或放手让它自由运行。SmartPause 自动检测何时需要人类输入。 |
 | **🔄 PIVOT / REFINE 循环** | 第 15 阶段自主决策：PROCEED、REFINE（调参）或 PIVOT（新方向）。产物自动版本化。 |
 | **🤖 多 Agent 辩论** | 假设生成、结果分析、同行评审均使用结构化的多视角辩论。 |
 | **🧬 自学习** | 每次运行提取教训（决策理由、运行时警告、指标异常），30 天时间衰减。未来运行从过去的错误中学习。 |
 | **📚 知识库** | 每次运行在 6 个类别（决策、实验、发现、文献、问题、评审）中构建结构化知识库。 |
 | **🛡️ Sentinel 看门狗** | 后台质量监控：NaN/Inf 检测、论文-证据一致性、引用相关性评分、反数据捏造守卫。 |
+| **🔍 声明验证** | 内联事实检查：从 AI 生成的文本中提取声明，与收集的文献交叉比对。标记无依据的引用和捏造的数字。 |
+| **🌿 分支探索** | 分叉流水线以同时探索多个研究方向，并排比较结果，合并最佳路径继续推进。 |
 
 ---
 
@@ -249,7 +258,7 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 
 | 方式 | 怎么用 |
 |------|--------|
-| **独立 CLI** | `researchclaw setup` → `researchclaw init` → `researchclaw run --topic "..." --auto-approve` |
+| **独立 CLI** | `researchclaw run --topic "..." --auto-approve`（自动）或 `--mode co-pilot`（协作） |
 | **Python API** | `from researchclaw.pipeline import Runner; Runner(config).run()` |
 | **Claude Code** | 读取 `RESEARCHCLAW_CLAUDE.md` — 直接说 *"Run research on [主题]"* |
 | **Copilot CLI** | `researchclaw run --topic "..."` 配合 `llm.acp.agent: "gh"` |
@@ -283,6 +292,8 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 ```
 
 > **门控阶段**（5、9、20）可暂停等待人工审批，也可用 `--auto-approve` 自动通过。拒绝后流水线回滚。
+
+> **Co-Pilot 模式**（`--mode co-pilot`）：在阶段 7-8（Idea Workshop）、阶段 9（Baseline Navigator）和阶段 16-17（Paper Co-Writer）进行深度人机协作。其他阶段自动执行，SmartPause 持续监控。
 
 > **决策循环**：第 15 阶段可触发 REFINE（→ 第 13 阶段）或 PIVOT（→ 第 8 阶段），自动版本化之前的产物。
 
@@ -318,6 +329,121 @@ researchclaw run --config config.yaml --topic "Your research idea" --auto-approv
 | **📐 模板切换** | `neurips_2025`、`iclr_2026`、`icml_2026` — Markdown → LaTeX，含数学公式、表格、图片、交叉引用、`\cite{}` |
 | **🛡️ 反数据捏造** | VerifiedRegistry 强制论文中使用经过验证的实验数据。自动诊断失败实验并在写作前修复。未验证数字被清理。 |
 | **🚦 质量门控** | 3 个人工审批门控（阶段 5、9、20），支持回滚。用 `--auto-approve` 跳过。 |
+| **🧑‍✈️ HITL Co-Pilot** | 6 种干预模式，支持逐阶段策略。Idea Workshop、Baseline Navigator、Paper Co-Writer 实现深度协作。SmartPause、成本护栏、升级策略和干预学习确保生产安全。CLI/WebSocket/MCP 适配器。 |
+| **💰 成本护栏** | 预算监控，可配置阈值告警（50%/80%/100%）。超出预算时流水线自动暂停。 |
+| **🔐 可复现性** | 所有阶段产物的 SHA256 校验和。不可变清单用于验证。多级撤销与版本化快照。 |
+
+---
+
+## 🧑‍✈️ 人机协作 Co-Pilot
+
+**AutoResearchClaw v0.4.0 引入了完整的人机协作（HITL）系统**，将流水线从纯自动化转变为人机协作的研究引擎。选择你的参与程度：
+
+### 干预模式
+
+| 模式 | 命令 | 做什么 |
+|------|------|--------|
+| **完全自动** | `--auto-approve` | 原始行为——无人工干预 |
+| **仅门控** | `--mode gate-only` | 在 3 个门控阶段（5、9、20）暂停等待审批 |
+| **检查点** | `--mode checkpoint` | 在每个阶段组边界暂停（8 个检查点） |
+| **Co-Pilot** | `--mode co-pilot` | 在关键阶段深度协作，其余自动执行 |
+| **逐步** | `--mode step-by-step` | 每个阶段后暂停——用于学习流水线 |
+| **快速** | `--mode express` | 快速审核——仅 3 个最关键的门控 |
+
+### Co-Pilot 工作流
+
+```
+You: researchclaw run --topic "量子噪声作为神经网络正则化" --mode co-pilot
+
+流水线自动运行阶段 1-7...
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │  HITL | Stage 08: HYPOTHESIS_GEN                            │
+  │  阶段后审查                                                  │
+  │                                                             │
+  │  提及的假设数: 3                                              │
+  │  新颖性得分: 0.72（中等）                                      │
+  │                                                             │
+  │  [a] 通过  [r] 拒绝  [e] 编辑  [c] 协作                      │
+  │  [i] 注入引导  [v] 查看输出  [q] 中止                          │
+  └─────────────────────────────────────────────────────────────┘
+
+You: c  (开始协作对话)
+You: 假设 3 很有趣，但需要 Dropout/Label Smoothing 作为基线
+AI:  已更新——添加了 Dropout、Label Smoothing、MixUp、CutMix 作为基线...
+You: approve
+
+流水线继续运行你优化后的假设...
+```
+
+### CLI 命令
+
+```bash
+# 以 HITL 模式启动
+researchclaw run --topic "..." --mode co-pilot
+
+# 附加到暂停的流水线（从另一个终端）
+researchclaw attach artifacts/rc-2026-xxx
+
+# 检查流水线和 HITL 状态
+researchclaw status artifacts/rc-2026-xxx
+
+# 从另一个终端或脚本审批/拒绝
+researchclaw approve artifacts/rc-2026-xxx --message "LGTM"
+researchclaw reject artifacts/rc-2026-xxx --reason "缺少关键基线"
+
+# 为某个阶段注入引导（甚至在它运行之前）
+researchclaw guide artifacts/rc-2026-xxx --stage 9 --message "使用 ResNet-50 作为主要基线"
+```
+
+### 核心能力
+
+| 功能 | 说明 |
+|------|------|
+| **Idea Workshop** | 协作式头脑风暴、评估和优化假设（阶段 7-8） |
+| **Baseline Navigator** | AI 建议基线 + 人工增删 + 可复现性检查清单（阶段 9） |
+| **Paper Co-Writer** | 分段撰写，人工编辑与 AI 润色结合（阶段 16-19） |
+| **SmartPause** | 基于置信度的动态暂停——自动检测何时需要人类输入 |
+| **声明验证** | 与收集的文献进行内联事实检查——标记无依据的声明 |
+| **成本护栏** | 预算监控，50%/80%/100% 阈值告警 |
+| **干预学习** | ALHF——从你的审查模式中学习，优化未来的暂停决策 |
+| **分支探索** | 分叉流水线探索多个假设，比较后合并最佳路径 |
+| **升级策略** | 分级通知（终端 → Slack → 邮件 → 自动暂停），无人值守时触发 |
+| **3 种适配器** | CLI（终端）、WebSocket（Web 仪表板）、MCP（外部 Agent） |
+
+### 配置
+
+```yaml
+# config.arc.yaml
+hitl:
+  enabled: true
+  mode: co-pilot                     # full-auto | gate-only | checkpoint | co-pilot | custom
+  cost_budget_usd: 50.0              # 超出预算时暂停（0 = 无限制）
+
+  notifications:
+    on_pause: true
+    on_quality_drop: true
+    channels: ["terminal"]            # terminal | slack | webhook
+
+  timeouts:
+    default_human_timeout_sec: 86400  # 默认等待 24 小时
+    auto_proceed_on_timeout: false
+
+  collaboration:
+    max_chat_turns: 50
+    save_chat_history: true
+
+  # 逐阶段自定义策略（可选，用于 'custom' 模式）
+  stage_policies:
+    8: { require_approval: true, enable_collaboration: true }
+    9: { require_approval: true, allow_edit_output: true }
+```
+
+### 向后兼容性
+
+- **默认：关闭。** 不设置 `hitl.enabled: true` 或 `--mode` 时，流水线行为与之前完全一致。
+- **`--auto-approve` 仍然有效。** 它会覆盖 HITL 模式。
+- **所有 2,699 项现有测试通过**（包含 HITL 代码）。
 
 ---
 
@@ -388,7 +514,50 @@ researchclaw run --config config.arc.yaml --topic "Your idea" --auto-approve
 
 - **默认：关闭。** 如果 `metaclaw_bridge` 不存在或 `enabled: false`，流水线行为与之前完全一致。
 - **无新依赖。** MetaClaw 是可选的——核心流水线无需它即可运行。
-- **所有 1,823 项现有测试通过**（包含集成代码）。
+- **所有 2,699 项现有测试通过**（包含集成代码）。
+
+---
+
+## 🧩 技能库
+
+AutoResearchClaw 现已支持加载**开源和自定义技能**，进一步增强你的研究体验。同时内置 **19 个预加载技能**（科学写作、文献搜索、化学、生物等）作为即用参考，开箱即用的灵活性极高。通过在技能的 frontmatter 中添加 `enabled: false` 可禁用任何技能。
+
+**内置技能示例：**
+
+| 类别 | 技能 | 说明 |
+|------|------|------|
+| **写作** | `scientific-writing` | IMRAD 结构、引用格式、报告规范 |
+| **领域** | `chemistry-rdkit` | 分子分析、SMILES、指纹、药物发现 |
+| **实验** | `literature-search` | 系统综述、PRISMA 方法论 |
+
+> 使用 `researchclaw skills list` 查看全部 19 个技能。
+
+### 加载自定义技能
+
+```bash
+# 方式 1：安装技能（跨项目持久化）
+researchclaw skills install /path/to/my-skill/
+
+# 方式 2：将 SKILL.md 放入项目中
+mkdir -p .claude/skills/my-custom-skill
+# 然后创建一个带有 YAML frontmatter 的 SKILL.md（name、description、trigger-keywords、applicable-stages）
+
+# 方式 3：在 config.arc.yaml 中配置共享技能目录
+# skills:
+#   custom_dirs:
+#     - /path/to/team-shared-skills
+```
+
+### 使用技能
+
+技能会自动加载并注入到 LLM 提示中——无需手动激活。使用 CLI 进行检查：
+
+```bash
+researchclaw skills list               # 显示所有已加载的技能及来源
+researchclaw skills validate ./my-skill # 检查 SKILL.md 格式
+```
+
+浏览社区技能：[K-Dense-AI/claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)（150+ 个跨学科的科学技能）。
 
 ---
 
@@ -507,6 +676,23 @@ export:
 prompts:
   custom_file: ""                  # 自定义 Prompt YAML 路径（空 = 使用默认）
 
+# === HITL Co-Pilot（v0.4.0 新增）===
+hitl:
+  enabled: false                     # 设为 true 以启用 HITL
+  mode: co-pilot                     # full-auto | gate-only | checkpoint | step-by-step | co-pilot | custom
+  cost_budget_usd: 0.0              # 成本限制（美元，0 = 无限制）
+  notifications:
+    on_pause: true                   # 流水线暂停时通知
+    on_quality_drop: true            # 质量下降时通知
+    channels: ["terminal"]           # terminal | slack | webhook
+  timeouts:
+    default_human_timeout_sec: 86400 # 最多等待人类输入 24 小时
+    auto_proceed_on_timeout: false   # 如为 true，超时后自动通过
+  collaboration:
+    max_chat_turns: 50               # 每次协作会话的最大轮数
+    save_chat_history: true          # 持久化聊天记录
+  stage_policies: {}                 # 逐阶段覆盖（用于 'custom' 模式）
+
 # === 安全 ===
 security:
   hitl_required_stages: [5, 9, 20] # 需要人工审批的阶段
@@ -576,7 +762,7 @@ MIT — 详见 [LICENSE](../LICENSE)。
 
 ```bibtex
 @misc{liu2026autoresearchclaw,
-  author       = {Liu, Jiaqi and Xia, Peng and Han, Siwei and Qiu, Shi and Zhang, Letian and Chen, Guiming  and Tu, Haoqin and Yang, Xinyu and and Zhou, Jiawei and Zhu, Hongtu and Li, Yun and Zhou, Yuyin and Zheng, Zeyu and Xie, Cihang and Ding, Mingyu and Yao, Huaxiu},
+  author       = {Liu, Jiaqi and Xia, Peng and Han, Siwei and Qiu, Shi and Zhang, Letian and Chen, Guiming and Tu, Haoqin and Yang, Xinyu and Zhou, Jiawei and Zhu, Hongtu and Li, Yun and Zhou, Yuyin and Zheng, Zeyu and Xie, Cihang and Ding, Mingyu and Yao, Huaxiu},
   title        = {AutoResearchClaw: Fully Autonomous Research from Idea to Paper},
   year         = {2026},
   organization = {GitHub},

@@ -125,6 +125,7 @@ class AdapterBundle:
     sessions: SessionsAdapter = field(default_factory=RecordingSessionsAdapter)
     web_fetch: WebFetchAdapter = field(default_factory=RecordingWebFetchAdapter)
     browser: BrowserAdapter = field(default_factory=RecordingBrowserAdapter)
+    hitl: object | None = None
 
     @classmethod
     def from_config(cls, config: object) -> AdapterBundle:

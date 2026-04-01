@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import importlib
 import logging
+import math
 import os
 import shutil
 import tempfile
+import threading
 import time as _time
 from pathlib import Path
 
@@ -73,14 +75,26 @@ def _write_pipeline_summary(run_dir: Path, summary: dict[str, object]) -> None:
     )
 
 
-def _write_checkpoint(run_dir: Path, stage: Stage, run_id: str) -> None:
+def _write_checkpoint(
+    run_dir: Path, stage: Stage, run_id: str,
+    adapters: "AdapterBundle | None" = None,
+) -> None:
     """Write checkpoint atomically via temp file + rename to prevent corruption."""
-    checkpoint = {
+    checkpoint: dict[str, object] = {
         "last_completed_stage": int(stage),
         "last_completed_name": stage.name,
         "run_id": run_id,
         "timestamp": _utcnow_iso(),
     }
+
+    # Embed HITL session data if available
+    if adapters is not None:
+        hitl_session = getattr(adapters, "hitl", None)
+        if hitl_session is not None:
+            try:
+                checkpoint["hitl"] = hitl_session.hitl_checkpoint_data()
+            except Exception:
+                pass
     target = run_dir / "checkpoint.json"
     fd, tmp_path = tempfile.mkstemp(dir=run_dir, suffix=".tmp", prefix="checkpoint_")
     os.close(fd)
@@ -215,8 +229,15 @@ def _run_experiment_diagnosis(run_dir: Path, config: RCConfig, run_id: str) -> N
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
 
         # Collect stdout/stderr from experiment runs
+        # Look in stage-12 (EXPERIMENT_RUN) and stage-13 (ITERATIVE_REFINE), not stage-14
         stdout, stderr = "", ""
-        runs_dir = summary_path.parent / "runs"
+        runs_dir = None
+        for _candidate_runs in sorted(run_dir.glob("stage-1[23]*/runs"), reverse=True):
+            if _candidate_runs.is_dir():
+                runs_dir = _candidate_runs
+                break
+        if runs_dir is None:
+            runs_dir = summary_path.parent / "runs"
         if runs_dir.is_dir():
             for run_file in sorted(runs_dir.glob("*.json"))[:5]:
                 try:
@@ -418,6 +439,7 @@ def execute_pipeline(
     stop_on_gate: bool = False,
     skip_noncritical: bool = False,
     kb_root: Path | None = None,
+    cancel_event: "threading.Event | None" = None,
 ) -> list[StageResult]:
     """Execute pipeline stages sequentially from `from_stage` and write summary."""
 
@@ -425,14 +447,63 @@ def execute_pipeline(
     started = False
     total_stages = len(STAGE_SEQUENCE)
 
+    # ── Integration hooks: EventLog, ExperimentMemory, CostTracker ──
+    event_log = None
+    try:
+        from researchclaw.pipeline.event_log import EventLog, EventType, create_event
+        event_log = EventLog(log_dir=run_dir)
+        event_log.append(create_event(
+            EventType.PIPELINE_START, run_id=run_id,
+            stages=total_stages, from_stage=int(from_stage),
+        ))
+    except Exception:
+        logger.debug("Event log initialisation skipped")
+
+    exp_memory = None
+    try:
+        from researchclaw.memory.experiment_memory import ExperimentMemory
+        _mem_dir = run_dir / "experiment_memory"
+        _mem_dir.mkdir(parents=True, exist_ok=True)
+        exp_memory = ExperimentMemory(store_dir=str(_mem_dir))
+    except Exception:
+        logger.debug("Experiment memory initialisation skipped")
+
+    cost_budget = getattr(config.experiment.cli_agent, "max_budget_usd", 0.0) or 0.0
+
     for stage in STAGE_SEQUENCE:
         started = _should_start(stage, from_stage, started)
         if not started:
             continue
 
+        # ── Check for cancellation before each stage ──
+        if cancel_event is not None and cancel_event.is_set():
+            logger.info("[%s] Pipeline cancelled before stage %s", run_id, stage.name)
+            print(f"[{run_id}] Pipeline cancelled by user.")
+            break
+
         stage_num = int(stage)
         prefix = f"[{run_id}] Stage {stage_num:02d}/{total_stages}"
         print(f"{prefix} {stage.name} — running...")
+
+        # ── Event log: stage start ──
+        if event_log:
+            try:
+                event_log.append(create_event(
+                    EventType.STAGE_START, run_id=run_id, stage=stage.name,
+                ))
+            except Exception:
+                pass
+
+        # ── Cost budget check ──
+        if cost_budget > 0:
+            try:
+                from researchclaw.cost_tracker import get_global_tracker
+                if not get_global_tracker().check_budget(cost_budget):
+                    logger.warning("Cost budget $%.2f exceeded — pausing pipeline", cost_budget)
+                    print(f"{prefix} BUDGET EXCEEDED ($%.2f) — stopping" % cost_budget)
+                    break
+            except Exception:
+                pass
 
         # BUG-218: Ensure the best stage-14 experiment data is promoted
         # BEFORE paper writing begins.  Without this, the recursive REFINE
@@ -454,15 +525,102 @@ def execute_pipeline(
             auto_approve_gates=auto_approve_gates,
         )
         elapsed = _time.monotonic() - t0
+
+        # ── Event log: stage end ──
+        if event_log:
+            try:
+                etype = EventType.STAGE_END if result.status == StageStatus.DONE else EventType.STAGE_FAIL
+                event_log.append(create_event(
+                    etype, run_id=run_id, stage=stage.name,
+                    status=result.status.value, elapsed_sec=round(elapsed, 1),
+                    error=result.error,
+                ))
+            except Exception:
+                pass
+
+        # ── ExperimentSpec: generate after design, validate after analysis ──
+        if stage == Stage.EXPERIMENT_DESIGN and result.status == StageStatus.DONE:
+            try:
+                from researchclaw.pipeline.experiment_spec import ExperimentSpec, MetricDef, generate_spec
+                spec_text = generate_spec(config.research.topic, "")
+                spec_path = run_dir / f"stage-{int(stage):02d}" / "experiment_spec.md"
+                spec_path.write_text(spec_text, encoding="utf-8")
+                logger.info("Experiment spec generated: %s", spec_path)
+            except Exception:
+                logger.debug("Experiment spec generation skipped")
+
+        if stage == Stage.RESULT_ANALYSIS and result.status == StageStatus.DONE:
+            try:
+                from researchclaw.pipeline.experiment_spec import parse_spec, validate_results_against_spec
+                spec_path = run_dir / "stage-09" / "experiment_spec.md"
+                if spec_path.exists():
+                    spec = parse_spec(spec_path.read_text(encoding="utf-8"))
+                    results_path = run_dir / "results.json"
+                    exp_results = {}
+                    if results_path.exists():
+                        exp_results = json.loads(results_path.read_text(encoding="utf-8"))
+                    violations = validate_results_against_spec(spec, exp_results)
+                    if violations:
+                        logger.warning("Spec violations: %s", violations)
+                        (run_dir / f"stage-{int(stage):02d}" / "spec_violations.json").write_text(
+                            json.dumps(violations, indent=2), encoding="utf-8"
+                        )
+            except Exception:
+                logger.debug("Experiment spec validation skipped")
+
+        # ── Pitfall detection after code generation / experiment run ──
+        if stage in (Stage.CODE_GENERATION, Stage.EXPERIMENT_RUN) and result.status == StageStatus.DONE:
+            try:
+                from researchclaw.pipeline.pitfall_detector import PitfallDetector
+                detector = PitfallDetector()
+                code_path = run_dir / f"stage-{int(stage):02d}"
+                code_files = list(code_path.rglob("*.py"))
+                code_text = "\n".join(f.read_text(errors="ignore") for f in code_files[:5])
+                pitfalls = detector.detect_all(code=code_text, results={}, experiment_config={})
+                if pitfalls:
+                    critical = [p for p in pitfalls if p.severity == "critical"]
+                    if critical:
+                        logger.warning("CRITICAL pitfalls detected: %s", [p.description for p in critical])
+                    pitfall_report = [{"type": p.type.value, "severity": p.severity, "description": p.description} for p in pitfalls]
+                    (run_dir / f"stage-{int(stage):02d}" / "pitfall_report.json").write_text(
+                        json.dumps(pitfall_report, indent=2), encoding="utf-8"
+                    )
+            except Exception:
+                logger.debug("Pitfall detection skipped")
+
+        # ── Experiment memory: record outcome after experiment stages ──
+        if stage in (Stage.EXPERIMENT_RUN, Stage.ITERATIVE_REFINE) and result.status == StageStatus.DONE and exp_memory:
+            try:
+                from researchclaw.memory.experiment_memory import ExperimentOutcome
+                import time as _time_mod
+                results_path = run_dir / "results.json"
+                metric_val = 0.0
+                if results_path.exists():
+                    rdata = json.loads(results_path.read_text(encoding="utf-8"))
+                    metric_val = rdata.get(config.experiment.metric_key, 0.0)
+                exp_memory.record_outcome(ExperimentOutcome(
+                    run_id=run_id, stage=stage.name,
+                    hypothesis=config.research.topic, config={},
+                    metric_name=config.experiment.metric_key,
+                    metric_value=float(metric_val) if metric_val else 0.0,
+                    baseline_value=0.0, improvement=0.0,
+                    success=result.status == StageStatus.DONE,
+                    failure_mode=result.error,
+                    packages_used=[], hyperparameters={},
+                    timestamp=_time_mod.time(), duration_sec=elapsed,
+                ))
+            except Exception:
+                logger.debug("Experiment memory recording skipped")
+
         if result.status == StageStatus.DONE:
             arts = ", ".join(result.artifacts) if result.artifacts else "none"
             if result.decision == "degraded":
                 print(
                     f"{prefix} {stage.name} — DEGRADED ({elapsed:.1f}s) "
-                    f"— continuing with sanitization -> {arts}"
+                    f"— continuing with sanitization → {arts}"
                 )
             else:
-                print(f"{prefix} {stage.name} — done ({elapsed:.1f}s) -> {arts}")
+                print(f"{prefix} {stage.name} — done ({elapsed:.1f}s) → {arts}")
         elif result.status == StageStatus.FAILED:
             err = result.error or "unknown error"
             print(f"{prefix} {stage.name} — FAILED ({elapsed:.1f}s) — {err}")
@@ -490,7 +648,7 @@ def execute_pipeline(
                 pass
 
         if result.status == StageStatus.DONE:
-            _write_checkpoint(run_dir, stage, run_id)
+            _write_checkpoint(run_dir, stage, run_id, adapters=adapters)
 
         # --- Experiment diagnosis + repair after Stage 14 (result_analysis) ---
         if (
@@ -511,7 +669,8 @@ def execute_pipeline(
                     pass
 
         # --- Heartbeat for sentinel watchdog ---
-        _write_heartbeat(run_dir, stage, run_id)
+        if result.status == StageStatus.DONE:
+            _write_heartbeat(run_dir, stage, run_id)
 
         # --- PIVOT/REFINE decision handling ---
         if (
@@ -563,6 +722,7 @@ def execute_pipeline(
                     stop_on_gate=stop_on_gate,
                     skip_noncritical=skip_noncritical,
                     kb_root=kb_root,
+                    cancel_event=cancel_event,
                 )
                 results.extend(pivot_results)
                 # BUG-211: Promote best stage-14 after REFINE completes so
@@ -605,11 +765,18 @@ def execute_pipeline(
                 # experiment summary across all REFINE iterations.
                 _promote_best_stage14(run_dir, config)
 
+        # --- HITL: Handle abort decision ---
+        if result.decision == "abort":
+            logger.info("[%s] Pipeline aborted by user at stage %s", run_id, stage.name)
+            print(f"[{run_id}] Pipeline aborted by user at {stage.name}")
+            break
+
         if result.status == StageStatus.FAILED:
             if skip_noncritical and stage in NONCRITICAL_STAGES:
                 logger.warning("Noncritical stage %s failed - skipping", stage.name)
             else:
                 break
+
         if result.status == StageStatus.PAUSED:
             logger.warning(
                 "[%s] Pipeline paused at %s: %s",
@@ -618,6 +785,16 @@ def execute_pipeline(
                 result.error or result.decision,
             )
             break
+
+        # --- HITL: Handle rejected stage (from HITL review) ---
+        if result.status == StageStatus.REJECTED:
+            logger.info(
+                "[%s] Stage %s rejected by reviewer — pipeline stopped",
+                run_id, stage.name,
+            )
+            print(f"[{run_id}] Stage {stage.name} rejected — pipeline stopped")
+            break
+
         if result.status == StageStatus.BLOCKED_APPROVAL and stop_on_gate:
             break
 
@@ -628,6 +805,18 @@ def execute_pipeline(
         run_dir=run_dir,
     )
     _write_pipeline_summary(run_dir, summary)
+
+    # ── Event log: pipeline end ──
+    if event_log:
+        try:
+            done_count = sum(1 for r in results if r.status == StageStatus.DONE)
+            failed_count = sum(1 for r in results if r.status == StageStatus.FAILED)
+            event_log.append(create_event(
+                EventType.PIPELINE_END, run_id=run_id,
+                stages_done=done_count, stages_failed=failed_count,
+            ))
+        except Exception:
+            pass
 
     # --- Evolution: extract and store lessons ---
     lessons: list[object] = []
@@ -646,41 +835,32 @@ def execute_pipeline(
     except Exception:  # noqa: BLE001
         logger.warning("MetaClaw post-pipeline hook failed (non-blocking)")
 
-    # --- A-Evolve: structured diagnosis + gated skill generation ---
-    _has_failures = any(
-        "failed" in str(getattr(r, "status", "")).lower() for r in results
-    )
-    if lessons or _has_failures:
-        try:
-            from researchclaw.evolution_aevolve import run_aevolve_cycle
-            from researchclaw.llm.client import LLMClient
-
-            _aevolve_llm = LLMClient.from_rc_config(config)
-            _skills_dir = Path(
-                getattr(
-                    getattr(config, "metaclaw_bridge", None),
-                    "skills_dir",
-                    "~/.metaclaw/skills",
-                )
-            ).expanduser()
-            _aevolve_skills = run_aevolve_cycle(
-                lessons, results, _aevolve_llm, _skills_dir, run_dir,
-            )
-            if _aevolve_skills:
-                logger.info(
-                    "A-Evolve: generated %d skills: %s",
-                    len(_aevolve_skills), _aevolve_skills,
-                )
-        except Exception:  # noqa: BLE001
-            logger.debug("A-Evolve cycle skipped (non-blocking)", exc_info=True)
-
     # --- Package deliverables into a single folder ---
     try:
         deliverables_dir = _package_deliverables(run_dir, run_id, config)
         if deliverables_dir is not None:
-            print(f"[{run_id}] Deliverables packaged -> {deliverables_dir}")
+            print(f"[{run_id}] Deliverables packaged → {deliverables_dir}")
     except Exception:  # noqa: BLE001
         logger.warning("Deliverables packaging failed (non-blocking)")
+
+    # --- HITL: Finalize session state ---
+    try:
+        hitl_session = getattr(adapters, "hitl", None)
+        if hitl_session is not None:
+            has_abort = any(
+                r.decision == "abort" for r in results
+            )
+            has_failure = any(
+                r.status == StageStatus.FAILED for r in results
+            )
+            if has_abort:
+                hitl_session.abort()
+            elif has_failure:
+                hitl_session.abort()
+            else:
+                hitl_session.complete()
+    except Exception:  # noqa: BLE001
+        logger.debug("HITL session finalization failed (non-blocking)")
 
     return results
 
@@ -1080,6 +1260,8 @@ def _promote_best_stage14(run_dir: Path, config: RCConfig) -> None:
                         pass
                     break
         if pm_val is not None:
+            if math.isnan(pm_val):
+                continue
             candidates.append((pm_val, d))
 
     if not candidates:
@@ -1277,8 +1459,6 @@ def _record_decision_history(
     )
 
 
-logger = logging.getLogger(__name__)
-
 
 def _read_quality_score(run_dir: Path) -> float | None:
     """Extract quality score from the most recent quality_report.json."""
@@ -1431,7 +1611,7 @@ def execute_iterative_pipeline(
     try:
         deliverables_dir = _package_deliverables(run_dir, run_id, config)
         if deliverables_dir is not None:
-            print(f"[{run_id}] Deliverables packaged -> {deliverables_dir}")
+            print(f"[{run_id}] Deliverables packaged →{deliverables_dir}")
     except Exception:  # noqa: BLE001
         logger.warning("Deliverables packaging failed (non-blocking)")
 

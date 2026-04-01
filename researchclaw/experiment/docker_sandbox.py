@@ -478,7 +478,9 @@ class DockerSandbox:
             for name, value in sorted(env_overrides.items()):
                 if not value or not _SAFE_ENV_NAME.match(name):
                     continue
-                cmd.extend(["-e", f"{name}={value}"])
+                # Strip null bytes from values to prevent subprocess ValueError
+                safe_value = str(value).replace("\x00", "")
+                cmd.extend(["-e", f"{name}={safe_value}"])
 
         # Image + entry point (passed as CMD arg to entrypoint.sh)
         cmd.append(cfg.image)

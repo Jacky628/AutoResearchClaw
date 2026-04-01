@@ -165,6 +165,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     resume = cast(bool, args.resume)
     skip_noncritical = cast(bool, args.skip_noncritical_stage)
     no_graceful_degradation = cast(bool, args.no_graceful_degradation)
+    hitl_mode = cast(str | None, getattr(args, "mode", None))
 
     kb_root_path = None
     config = RCConfig.load(config_path, check_paths=False)
@@ -246,6 +247,28 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     adapters = AdapterBundle()
 
+    # --- HITL session setup ---
+    hitl_session = None
+    try:
+        from researchclaw.hitl.config import HITLConfig
+        from researchclaw.hitl.session import HITLSession
+        from researchclaw.hitl.presets import get_preset
+
+        hitl_config = None
+        if hitl_mode:
+            # CLI --mode flag takes precedence
+            hitl_config = get_preset(hitl_mode)
+            if hitl_config is None:
+                hitl_config = HITLConfig(enabled=True, mode=hitl_mode)
+        elif hasattr(config, "hitl") and config.hitl is not None:
+            hitl_config = config.hitl
+        # If HITL is enabled, auto_approve should be False
+        if hitl_config and hitl_config.enabled:
+            auto_approve = False
+            stop_on_gate = False  # HITL handles gates directly
+    except ImportError:
+        hitl_config = None
+
     from researchclaw.pipeline.runner import execute_pipeline, read_checkpoint
     from researchclaw.pipeline.stages import Stage
 
@@ -268,12 +291,34 @@ def cmd_run(args: argparse.Namespace) -> int:
             from_stage = resumed
             print(f"Resuming from checkpoint: Stage {int(from_stage)}: {from_stage.name}")
 
+    # --- Create HITL session and wire to adapters ---
+    if hitl_config and hitl_config.enabled:
+        try:
+            hitl_session = HITLSession(
+                run_id=run_id,
+                config=hitl_config,
+                run_dir=run_dir,
+            )
+            # Wire CLI adapter for interactive input
+            from researchclaw.hitl.adapters.cli_adapter import CLIAdapter
+
+            cli_adapter = CLIAdapter(run_dir=run_dir)
+            hitl_session.set_input_callback(cli_adapter.collect_input)
+            adapters.hitl = hitl_session
+        except Exception as _hitl_exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "HITL session setup failed: %s", _hitl_exc
+            )
+
     from researchclaw import __version__
     print(f"ResearchClaw v{__version__} — Starting pipeline")
     print(f"  Run ID:  {run_id}")
     print(f"  Topic:   {config.research.topic}")
     print(f"  Output:  {run_dir}")
     print(f"  Mode:    {config.project.mode}")
+    if hitl_config and hitl_config.enabled:
+        print(f"  HITL:    {hitl_config.mode}")
     print(f"  From:    Stage {int(from_stage)}: {from_stage.name}")
 
     # Hint: OpenCode beast mode
@@ -301,6 +346,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     done = sum(1 for r in results if r.status.value == "done")
     paused = sum(1 for r in results if r.status.value == "paused")
     failed = sum(1 for r in results if r.status.value == "failed")
+
+    # --- Complete HITL session ---
+    if hitl_session is not None:
+        hitl_session.complete()
+        if hitl_session.interventions_count > 0:
+            print(
+                f"  HITL: {hitl_session.interventions_count} interventions, "
+                f"{hitl_session.total_human_time_sec:.0f}s human time"
+            )
+
     if paused:
         print(
             f"\nPipeline paused: {done}/{len(results)} stages done, "
@@ -927,6 +982,13 @@ def main(argv: list[str] | None = None) -> int:
         "--auto-approve", action="store_true", help="Auto-approve gate stages"
     )
     _ = run_p.add_argument(
+        "--mode", "-m",
+        choices=["full-auto", "gate-only", "checkpoint", "step-by-step",
+                 "co-pilot", "express", "thorough", "learning"],
+        default=None,
+        help="HITL intervention mode (overrides config)",
+    )
+    _ = run_p.add_argument(
         "--skip-preflight", action="store_true", help="Skip LLM preflight check"
     )
     _ = run_p.add_argument(
@@ -1038,6 +1100,30 @@ def main(argv: list[str] | None = None) -> int:
     _ = cal_p.add_argument("--plan", help="Generate submission timeline for a venue")
     _ = cal_p.add_argument("--domains", nargs="+", help="Filter by domain")
 
+    # HITL: Attach to running pipeline
+    attach_p = sub.add_parser("attach", help="Attach to a running/paused pipeline for HITL interaction")
+    _ = attach_p.add_argument("run_dir", help="Path to run artifacts directory")
+
+    # HITL: Check pipeline status
+    status_p = sub.add_parser("status", help="Show pipeline and HITL status")
+    _ = status_p.add_argument("run_dir", help="Path to run artifacts directory")
+
+    # HITL: Approve a gate
+    approve_p = sub.add_parser("approve", help="Approve the current HITL gate")
+    _ = approve_p.add_argument("run_dir", help="Path to run artifacts directory")
+    _ = approve_p.add_argument("--message", "-m", default="", help="Approval note")
+
+    # HITL: Reject a gate
+    reject_p = sub.add_parser("reject", help="Reject the current HITL gate")
+    _ = reject_p.add_argument("run_dir", help="Path to run artifacts directory")
+    _ = reject_p.add_argument("--reason", "-r", default="", help="Rejection reason")
+
+    # HITL: Inject guidance
+    guide_p = sub.add_parser("guide", help="Inject guidance for a pipeline stage")
+    _ = guide_p.add_argument("run_dir", help="Path to run artifacts directory")
+    _ = guide_p.add_argument("--stage", "-s", type=int, required=True, help="Target stage number")
+    _ = guide_p.add_argument("--message", "-m", required=True, help="Guidance text")
+
     args = parser.parse_args(argv)
 
     command = cast(str | None, args.command)
@@ -1072,9 +1158,162 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_calendar(args)
     elif command == "skills":
         return cmd_skills(args)
+    elif command == "attach":
+        return cmd_attach(args)
+    elif command == "status":
+        return cmd_status(args)
+    elif command == "approve":
+        return cmd_hitl_approve(args)
+    elif command == "reject":
+        return cmd_hitl_reject(args)
+    elif command == "guide":
+        return cmd_hitl_guide(args)
     else:
         parser.print_help()
         return 0
+
+
+# ---------------------------------------------------------------------------
+# HITL subcommands
+# ---------------------------------------------------------------------------
+
+
+def cmd_attach(args: argparse.Namespace) -> int:
+    """Attach to a running/paused pipeline for interactive HITL."""
+    run_dir = Path(cast(str, args.run_dir))
+    if not run_dir.is_dir():
+        print(f"Error: run directory not found: {run_dir}", file=sys.stderr)
+        return 1
+
+    from researchclaw.hitl.store import HITLStore
+    from researchclaw.hitl.tui.panel import show_pipeline_status, show_intervention_log
+
+    store = HITLStore(run_dir)
+    waiting = store.load_waiting()
+
+    # Show current status
+    session_data = store.load_session()
+    mode = session_data.get("mode", "unknown") if session_data else "unknown"
+    show_pipeline_status(run_dir, mode=mode)
+    print()
+
+    if waiting is None:
+        print("  Pipeline is not waiting for input.")
+        print("  Use 'researchclaw status' for full details.")
+        return 0
+
+    # Pipeline is waiting — enter interactive mode
+    print(f"  Pipeline is paused at Stage {waiting['stage']} ({waiting.get('stage_name', '?')})")
+    print(f"  Reason: {waiting.get('reason', '?')}")
+    print()
+
+    from researchclaw.hitl.intervention import WaitingState, PauseReason
+    from researchclaw.hitl.adapters.cli_adapter import CLIAdapter
+
+    ws = WaitingState.from_dict(waiting)
+    adapter = CLIAdapter(run_dir=run_dir)
+    human_input = adapter.collect_input(ws)
+
+    # Write response for the pipeline process to pick up
+    import json
+
+    response_path = run_dir / "hitl" / "response.json"
+    response_path.parent.mkdir(parents=True, exist_ok=True)
+    response_path.write_text(
+        json.dumps(human_input.to_dict(), indent=2), encoding="utf-8"
+    )
+    print(f"\n  Response saved. Pipeline will pick it up automatically.")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Show pipeline and HITL status."""
+    run_dir = Path(cast(str, args.run_dir))
+    if not run_dir.is_dir():
+        print(f"Error: run directory not found: {run_dir}", file=sys.stderr)
+        return 1
+
+    from researchclaw.hitl.store import HITLStore
+    from researchclaw.hitl.tui.panel import show_pipeline_status, show_intervention_log
+
+    store = HITLStore(run_dir)
+    session_data = store.load_session()
+    mode = session_data.get("mode", "unknown") if session_data else "N/A"
+
+    show_pipeline_status(run_dir, mode=mode)
+    print()
+
+    summary = store.get_summary()
+    print(f"  HITL interventions: {summary['intervention_count']}")
+    print(f"  Chat sessions: stages {summary['chat_stages']}")
+    print(f"  Guidance injected: stages {summary['guidance_stages']}")
+    print(f"  Snapshots: {summary['snapshot_count']}")
+
+    if store.is_waiting():
+        waiting = store.load_waiting()
+        if waiting:
+            print(f"\n  ⚠ WAITING for input at Stage {waiting['stage']}")
+            print(f"    Reason: {waiting.get('reason', '?')}")
+            print(f"    Since: {waiting.get('since', '?')}")
+            print(f"    Use 'researchclaw attach {run_dir}' to respond.")
+
+    print()
+    show_intervention_log(run_dir)
+    return 0
+
+
+def cmd_hitl_approve(args: argparse.Namespace) -> int:
+    """Approve the current HITL gate (non-interactive)."""
+    run_dir = Path(cast(str, args.run_dir))
+    message = cast(str, args.message)
+
+    import json
+
+    response = {"action": "approve", "message": message}
+    response_path = run_dir / "hitl" / "response.json"
+    response_path.parent.mkdir(parents=True, exist_ok=True)
+    response_path.write_text(
+        json.dumps(response, indent=2), encoding="utf-8"
+    )
+    print(f"  Approved. Response saved to {response_path}")
+    return 0
+
+
+def cmd_hitl_reject(args: argparse.Namespace) -> int:
+    """Reject the current HITL gate (non-interactive)."""
+    run_dir = Path(cast(str, args.run_dir))
+    reason = cast(str, args.reason)
+
+    import json
+
+    response = {"action": "reject", "message": reason}
+    response_path = run_dir / "hitl" / "response.json"
+    response_path.parent.mkdir(parents=True, exist_ok=True)
+    response_path.write_text(
+        json.dumps(response, indent=2), encoding="utf-8"
+    )
+    print(f"  Rejected. Response saved to {response_path}")
+    return 0
+
+
+def cmd_hitl_guide(args: argparse.Namespace) -> int:
+    """Inject guidance for a pipeline stage."""
+    run_dir = Path(cast(str, args.run_dir))
+    stage = cast(int, args.stage)
+    message = cast(str, args.message)
+
+    from researchclaw.hitl.store import HITLStore
+
+    store = HITLStore(run_dir)
+    store.save_guidance(stage, message)
+
+    # Also write to stage dir
+    stage_dir = run_dir / f"stage-{stage:02d}"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    (stage_dir / "hitl_guidance.md").write_text(message, encoding="utf-8")
+
+    print(f"  Guidance saved for Stage {stage} ({len(message)} chars)")
+    return 0
 
 
 if __name__ == "__main__":

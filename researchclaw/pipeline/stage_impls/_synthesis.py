@@ -119,6 +119,42 @@ def _execute_hypothesis_gen(
             )
     else:
         hypotheses_md = _default_hypotheses(config.research.topic)
+    # --- HITL: Read human guidance if available ---
+    guidance_file = stage_dir / "hitl_guidance.md"
+    if guidance_file.exists():
+        try:
+            guidance = guidance_file.read_text(encoding="utf-8").strip()
+            if guidance and llm is not None:
+                logger.info("Applying HITL guidance to hypotheses")
+                resp = llm.chat(
+                    [{"role": "user", "content": (
+                        f"Refine the following hypotheses based on this human guidance.\n\n"
+                        f"## Current Hypotheses\n{hypotheses_md}\n\n"
+                        f"## Human Guidance\n{guidance}\n\n"
+                        f"Produce improved hypotheses that incorporate the guidance."
+                    )}],
+                    max_tokens=4096,
+                )
+                hypotheses_md = resp.content
+        except Exception:
+            logger.debug("HITL guidance application failed (non-blocking)")
+
+    # --- HITL: Idea Workshop data persistence ---
+    try:
+        from researchclaw.hitl.workshops.idea import IdeaWorkshop
+
+        workshop = IdeaWorkshop(run_dir, llm_client=llm)
+        workshop.candidates = [
+            type("IC", (), {"title": "Generated Hypothesis", "description": hypotheses_md[:500],
+                            "to_dict": lambda self: {"title": self.title, "description": self.description},
+                            "human_approved": False, "baselines": [], "keywords": [],
+                            "novelty_notes": "", "feasibility_notes": "", "impact_notes": "",
+                            "score": 0.0})()
+        ]
+        workshop.save()
+    except Exception:
+        pass
+
     (stage_dir / "hypotheses.md").write_text(hypotheses_md, encoding="utf-8")
 
     # --- Novelty check (non-blocking) ---

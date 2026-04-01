@@ -1085,6 +1085,17 @@ def _build_context_preamble(
                     parts.append(
                         f"\n### LaTeX Table\n```latex\n{summary['latex_table']}\n```"
                     )
+    # --- HITL guidance injection ---
+    for stage_dir in sorted(run_dir.glob("stage-*/hitl_guidance.md")):
+        try:
+            guidance = stage_dir.read_text(encoding="utf-8").strip()
+            if guidance:
+                stage_name = stage_dir.parent.name
+                parts.append(
+                    f"\n### Human Guidance ({stage_name})\n{guidance[:1000]}"
+                )
+        except (OSError, UnicodeDecodeError):
+            pass
     return "\n".join(parts)
 
 
