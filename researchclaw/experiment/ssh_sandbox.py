@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -276,10 +277,11 @@ class SshRemoteSandbox:
         py = shlex.quote(cfg.remote_python)
         arg_text = " ".join(shlex.quote(arg) for arg in (args or []))
         arg_suffix = f" {arg_text}" if arg_text else ""
+        _SAFE_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
         env_parts = [
             f"{name}={shlex.quote(value)}"
             for name, value in sorted((env_overrides or {}).items())
-            if value
+            if value and _SAFE_ENV_NAME.match(name)
         ]
         env_prefix = (" ".join(env_parts) + " ") if env_parts else ""
 
@@ -347,9 +349,10 @@ class SshRemoteSandbox:
             # Try to pass all GPUs; fails gracefully if none available
             parts.extend(["--gpus", "all"])
 
+        _SAFE_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
         if env_overrides:
             for name, value in sorted(env_overrides.items()):
-                if not value:
+                if not value or not _SAFE_ENV.match(name):
                     continue
                 parts.extend(["-e", shlex.quote(f"{name}={value}")])
 

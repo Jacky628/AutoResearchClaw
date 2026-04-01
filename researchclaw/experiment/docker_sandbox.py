@@ -473,9 +473,10 @@ class DockerSandbox:
             else:
                 cmd.extend(["--gpus", "all"])
 
+        _SAFE_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
         if env_overrides:
             for name, value in sorted(env_overrides.items()):
-                if not value:
+                if not value or not _SAFE_ENV_NAME.match(name):
                     continue
                 cmd.extend(["-e", f"{name}={value}"])
 

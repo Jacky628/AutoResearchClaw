@@ -655,10 +655,11 @@ def _execute_literature_screen(
     )
     # Cap total candidates text size to avoid blowing token budget
     if len(candidates_text) > _MAX_CANDIDATES_CHARS:
-        candidates_text = candidates_text[:_MAX_CANDIDATES_CHARS]
+        # Truncate at newline boundary to avoid cutting mid-JSON-line
+        candidates_text = candidates_text[:_MAX_CANDIDATES_CHARS].rsplit("\n", 1)[0]
         logger.info(
             "Candidates text truncated to %d chars for screening",
-            _MAX_CANDIDATES_CHARS,
+            len(candidates_text),
         )
     logger.info(
         "Domain pre-filter: kept %d, dropped %d (keywords: %s)",
