@@ -37,6 +37,22 @@ from researchclaw.prompts import PromptManager
 logger = logging.getLogger(__name__)
 
 
+def _topic_is_literature_first(config: RCConfig) -> bool:
+    """Return True when the topic is a survey/review or the project uses docs-first mode.
+
+    Literature-first topics produce papers grounded in existing work rather
+    than novel experiments, so the "all simulated" and "no real metrics"
+    hard blocks should be bypassed.
+    """
+    topic_lower = config.research.topic.lower()
+    if any(kw in topic_lower for kw in ("survey", "review", "meta-analysis", "literature review")):
+        return True
+    project_mode = getattr(config.research, "project_mode", None)
+    if isinstance(project_mode, str) and project_mode.lower() == "docs-first":
+        return True
+    return False
+
+
 def _execute_paper_outline(
     stage_dir: Path,
     run_dir: Path,
@@ -1556,6 +1572,8 @@ def _execute_paper_draft(
                 logger.warning("P10: Contradiction advisories: %s", _contradictions)
 
     # R10: HARD BLOCK — refuse to write paper when all data is simulated
+    # (skipped for literature-first / survey topics)
+    _is_lit_first = _topic_is_literature_first(config)
     all_simulated = True
     for stage_subdir in sorted(run_dir.glob("stage-*/runs")):
         for run_file in sorted(stage_subdir.glob("*.json")):
@@ -1571,7 +1589,7 @@ def _execute_paper_draft(
         if not all_simulated:
             break
 
-    if all_simulated:
+    if all_simulated and not _is_lit_first:
         logger.error(
             "BLOCKED: All experiment data is simulated (mode='simulated'). "
             "Cannot write a paper based on formulaic fake data. "
@@ -1599,7 +1617,7 @@ def _execute_paper_draft(
         config.research.topic, config.research.domains
     )
     _empirical_domains = {"ml", "engineering", "biology", "chemistry"}
-    if not has_real_metrics:
+    if not has_real_metrics and not _is_lit_first:
         if _domain_id in _empirical_domains:
             logger.error(
                 "BLOCKED: Cannot write paper — experiment produced NO metrics. "
@@ -1964,6 +1982,21 @@ def _execute_paper_draft(
                 "- Prefer well-known, highly-cited papers over obscure ones.\n"
                 "- If unsure whether a paper exists or is relevant, DO NOT cite it.\n"
             )
+
+    # Literature-first mode instruction for survey/review topics
+    if _is_lit_first:
+        exp_metrics_instruction += (
+            "\n\n## LITERATURE-FIRST MODE\n"
+            "This paper is a **survey / review / literature-first study**.\n"
+            "- The contribution is the synthesis, taxonomy, and critical analysis of existing work.\n"
+            "- Do NOT claim novel experimental results. Instead, summarize and compare findings\n"
+            "  from the collected literature.\n"
+            "- Structure the paper around themes, taxonomies, or chronological developments.\n"
+            "- Include a comprehensive Related Work / Literature Review as the main body.\n"
+            "- Tables should compare methods, datasets, and reported metrics FROM the literature.\n"
+            "- The Conclusion should identify open problems and future directions.\n"
+        )
+        logger.info("Stage 17: Literature-first mode enabled for survey/review topic")
 
     if llm is not None:
         _pm = prompts or PromptManager()

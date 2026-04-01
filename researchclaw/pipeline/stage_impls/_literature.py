@@ -220,10 +220,11 @@ def _execute_search_strategy(
         "via", "using", "based", "study", "analysis", "empirical",
         "towards", "toward", "into", "exploring", "comparison", "tasks",
         "effectiveness", "investigation", "comprehensive", "novel",
+        "challenge", "challenges", "gaps", "gap", "critical", "survey", "review",
     }
 
-    def _extract_keywords(text: str) -> list[str]:
-        """Extract meaningful keywords from text, removing stop words."""
+    def _extract_search_terms(text: str) -> list[str]:
+        """Extract meaningful search terms from text, removing stop words."""
         return [
             w for w in re.split(r"[^a-zA-Z0-9]+", text)
             if w.lower() not in _stop and len(w) > 1
@@ -244,7 +245,7 @@ def _execute_search_strategy(
                 q_core = q_stripped[: -len(sfx)].strip()
                 break
         # Extract keywords from the core part
-        kws = _extract_keywords(q_core)
+        kws = _extract_search_terms(q_core)
         shortened = " ".join(kws[:max_kw])
         if suffix:
             shortened = f"{shortened} {suffix}"
@@ -261,19 +262,27 @@ def _execute_search_strategy(
                 sanitized.append(q)
         queries_list = sanitized
 
-    if not queries_list:
-        # Build diverse keyword queries from the topic
-        _words = _extract_keywords(topic)
+    def _build_default_search_queries(topic_text: str) -> list[str]:
+        """Generate concept-style search queries from the topic instead of copying the title."""
+        _words = _extract_search_terms(topic_text)
+        if not _words:
+            return [topic_text[:60]]
         kw_primary = " ".join(_words[:6])
         kw_short = " ".join(_words[:4])
-        queries_list = [
+        kw_alt = " ".join(_words[1:5]) if len(_words) > 4 else kw_short
+        return [
             kw_primary,
             f"{kw_short} benchmark",
             f"{kw_short} survey",
+            kw_alt,
+            f"{kw_short} recent advances",
         ]
 
+    if not queries_list:
+        queries_list = _build_default_search_queries(topic)
+
     # Ensure minimum query diversity — if dedup leaves too few, add variants
-    _all_kw = _extract_keywords(topic)
+    _all_kw = _extract_search_terms(topic)
     _seen_q: set[str] = set()
     unique_queries: list[str] = []
     for q in queries_list:
@@ -590,6 +599,10 @@ def _execute_literature_collect(
     )
 
 
+_MAX_ABSTRACT_LEN = 800  # Truncate long abstracts to reduce token usage
+_MAX_CANDIDATES_CHARS = 30_000  # Cap total candidates text sent to LLM
+
+
 def _execute_literature_screen(
     stage_dir: Path,
     run_dir: Path,
@@ -628,10 +641,25 @@ def _execute_literature_screen(
     # If pre-filter dropped everything, fall back to original (safety valve)
     if not filtered_rows:
         filtered_rows = _parse_jsonl_rows(candidates_text)
+    # Truncate abstracts and strip authors to reduce token usage
+    for row in filtered_rows:
+        abstract = row.get("abstract", "")
+        if isinstance(abstract, str) and len(abstract) > _MAX_ABSTRACT_LEN:
+            row["abstract"] = abstract[:_MAX_ABSTRACT_LEN] + "..."
+        # Strip authors list — not needed for screening and inflates tokens
+        row.pop("authors", None)
+
     # Rebuild candidates_text from filtered rows
     candidates_text = "\n".join(
         json.dumps(r, ensure_ascii=False) for r in filtered_rows
     )
+    # Cap total candidates text size to avoid blowing token budget
+    if len(candidates_text) > _MAX_CANDIDATES_CHARS:
+        candidates_text = candidates_text[:_MAX_CANDIDATES_CHARS]
+        logger.info(
+            "Candidates text truncated to %d chars for screening",
+            _MAX_CANDIDATES_CHARS,
+        )
     logger.info(
         "Domain pre-filter: kept %d, dropped %d (keywords: %s)",
         len(filtered_rows),

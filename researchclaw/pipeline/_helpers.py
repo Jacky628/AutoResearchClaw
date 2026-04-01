@@ -357,6 +357,7 @@ def _ensure_sandbox_deps(code: str, python_path: str) -> list[str]:
             r = _sp.run(
                 [str(py_path), "-c", f"import {pkg}"],
                 capture_output=True, timeout=10,
+                encoding="utf-8", errors="replace",
             )
             if r.returncode != 0:
                 pip_name = "scikit-learn" if pkg == "sklearn" else pkg
@@ -364,6 +365,7 @@ def _ensure_sandbox_deps(code: str, python_path: str) -> list[str]:
                 _sp.run(
                     [str(py_path), "-m", "pip", "install", pip_name, "--quiet"],
                     capture_output=True, timeout=120,
+                    encoding="utf-8", errors="replace",
                 )
                 installed.append(pip_name)
         except Exception as exc:

@@ -156,7 +156,8 @@ class ACPClient:
                 [acpx, "--ttl", "0", "--cwd", self._abs_cwd(),
                  self.config.agent, "sessions", "close",
                  self.config.session_name],
-                capture_output=True, timeout=15,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=15,
             )
         except Exception:  # noqa: BLE001
             pass

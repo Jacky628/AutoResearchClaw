@@ -358,6 +358,21 @@ class LLMClient:
                     time.sleep(delay)
                     continue
                 raise
+            except (TimeoutError, OSError) as exc:
+                # Covers TimeoutError, ConnectionResetError, IncompleteRead, etc.
+                if attempt < self.config.max_retries - 1:
+                    delay = self.config.retry_base_delay * (2**attempt)
+                    logger.info(
+                        "Retry %d/%d for %s (%s). Waiting %.1fs.",
+                        attempt + 1,
+                        self.config.max_retries,
+                        model,
+                        type(exc).__name__,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
 
         # All retries exhausted
         raise RuntimeError(
