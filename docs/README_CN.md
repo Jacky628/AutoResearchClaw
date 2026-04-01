@@ -66,10 +66,16 @@
 - **[04/01/2026]** **v0.4.0** — **人机协作 Co-Pilot 系统** — AutoResearchClaw 不再是纯自动化工具。新增 HITL 系统支持 6 种干预模式（`full-auto`、`gate-only`、`checkpoint`、`step-by-step`、`co-pilot`、`custom`），支持逐阶段策略配置与深度人机协作。包括：Idea Workshop（假设共创）、Baseline Navigator（实验设计审核）、Paper Co-Writer（协作撰写论文）、SmartPause（基于置信度的动态暂停）、ALHF 干预学习、反幻觉声明验证、成本预算护栏、流水线分支并行探索假设，以及 CLI 命令（`attach`/`status`/`approve`/`reject`/`guide`）。**[→ 完整 HITL 指南](HITL_GUIDE.md)**
 - **[03/30/2026]** **灵活技能加载** — AutoResearchClaw 现已支持从任何学科加载开源和自定义技能。内置 19 个预加载技能作为即用参考，覆盖科学写作、实验设计、化学、生物等领域，包括社区贡献的 [A-Evolve](https://github.com/A-EVO-Lab/a-evolve) 自进化技能。通过 `researchclaw skills install` 加载或将 `SKILL.md` 放入 `.claude/skills/`。参见[技能库](#-技能库)。
 - **[03/22/2026]** [v0.3.2](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.2) — **跨平台支持 + 重大稳定性更新** — AutoResearchClaw 现已支持任何 ACP 兼容的 AI 代理后端（Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Kimi CLI），并通过 OpenClaw 桥接支持消息平台（Discord、Telegram、飞书、微信）。新增 CLI-agent 代码生成后端，将 Stage 10 和 13 委托给外部 CLI agent，支持预算控制和超时管理。同时包含反数据捏造系统（VerifiedRegistry + 实验诊断与修复循环），100+ 个 bug 修复，模块化 executor 重构，`--resume` 自动检测，LLM 重试加固，以及社区反馈修复。
+
+<details>
+<summary>早期版本</summary>
+
 - **[03/18/2026]** [v0.3.1](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.1) — **OpenCode Beast Mode + Community Contributions** — New "Beast Mode" routes complex code generation to [OpenCode](https://github.com/anomalyco/opencode) with automatic complexity scoring and graceful fallback. Added Novita AI provider support, thread-safety hardening, improved LLM output parsing robustness, and 20+ bug fixes from community PRs and internal audit.
 - **[03/17/2026]** [v0.3.0](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.3.0) — **MetaClaw Integration** — AutoResearchClaw now supports [MetaClaw](https://github.com/aiming-lab/MetaClaw) cross-run learning: pipeline failures → structured lessons → reusable skills, injected into all 23 stages. **+18.3%** robustness in controlled experiments. Opt-in (`metaclaw_bridge.enabled: true`), fully backward-compatible. See [Integration Guide](#-metaclaw-integration).
 - **[03/16/2026]** [v0.2.0](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.2.0) — Three multi-agent subsystems (CodeAgent, BenchmarkAgent, FigureAgent), hardened Docker sandbox with network-policy-aware execution, 4-round paper quality audit (AI-slop detection, 7-dim review scoring, NeurIPS checklist), and 15+ bug fixes from production runs.
 - **[03/15/2026]** [v0.1.0](https://github.com/aiming-lab/AutoResearchClaw/releases/tag/v0.1.0) — We release AutoResearchClaw: a fully autonomous 23-stage research pipeline that turns a single research idea into a conference-ready paper. No human intervention required.
+
+</details>
 
 ---
 
