@@ -211,9 +211,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     run_id = _generate_run_id(config.research.topic)
     run_dir = Path(output or f"artifacts/{run_id}")
 
-    # BUG-119: When --resume without --output, search for the most recent
-    # existing run directory that matches the topic and has a checkpoint.
-    if resume and not output:
+    # BUG-119 / BUG-216: When --resume or --from-stage is used without
+    # --output, search for the most recent existing run directory that
+    # matches the topic.  Without this, --from-stage creates a new empty
+    # directory that has no prior stage artifacts.
+    if (resume or from_stage_name) and not output:
         topic_hash = hashlib.sha256(config.research.topic.encode()).hexdigest()[:6]
         artifacts_root = Path("artifacts")
         if artifacts_root.is_dir():
@@ -231,7 +233,16 @@ def cmd_run(args: argparse.Namespace) -> int:
             if candidates:
                 run_dir = candidates[0]
                 run_id = run_dir.name
-                print(f"Found existing run to resume: {run_dir}")
+                print(f"Found existing run: {run_dir}")
+            elif from_stage_name:
+                print(
+                    f"Error: --from-stage {from_stage_name} requires prior "
+                    f"stage artifacts, but no existing run found for topic "
+                    f"hash '{topic_hash}'. Use --output to specify the run "
+                    f"directory containing prior artifacts.",
+                    file=sys.stderr,
+                )
+                return 1
             else:
                 print(
                     "Warning: --resume specified but no checkpoint found "
@@ -605,7 +616,7 @@ _PROVIDER_URLS = {
     "openai": "https://api.openai.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "deepseek": "https://api.deepseek.com/v1",
-    "minimax": "https://api.minimax.io/v1",
+    "minimax": "https://api.minimaxi.com/v1",
 }
 
 _PROVIDER_MODELS = {

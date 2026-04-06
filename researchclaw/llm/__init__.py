@@ -30,7 +30,7 @@ PROVIDER_PRESETS = {
         "base_url": "https://api.novita.ai/openai",
     },
     "minimax": {
-        "base_url": "https://api.minimax.io/v1",
+        "base_url": "https://api.minimaxi.com/v1",
     },
     "openai-compatible": {
         "base_url": None,  # Use user-provided base_url

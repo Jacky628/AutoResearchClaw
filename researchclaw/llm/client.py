@@ -403,7 +403,7 @@ class LLMClient:
 
             # MiniMax API requires temperature in [0, 1.0]
             _temp = temperature
-            if "api.minimax.io" in self.config.base_url:
+            if "api.minimaxi.com" in self.config.base_url or "api.minimax.io" in self.config.base_url:
                 _temp = max(0.0, min(_temp, 1.0))
 
             if self._normalize_wire_api(self.config.wire_api) == "responses":

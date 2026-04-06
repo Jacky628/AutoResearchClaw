@@ -386,7 +386,7 @@ def test_resume_finds_existing_checkpoint_dir(
     )
     rc_cli.cmd_run(args)
     captured = capsys.readouterr()
-    assert "Found existing run to resume" in captured.out
+    assert "Found existing run" in captured.out
     assert old_run_dir.name in captured.out
 
 
