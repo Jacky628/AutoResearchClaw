@@ -113,8 +113,9 @@ class TaskDispatcher:
                     info["server"] = alt.name
                     info["status"] = "dispatched"
                     try:
-                        alt_server = self.registry.get(alt.name)
-                        result = await alt_server.run_experiment(
+                        alt_entry = self.registry.get(alt.name)
+                        alt_executor = SSHExecutor(alt_entry)
+                        result = await alt_executor.run_experiment(
                             remote_dir=task.get("remote_dir", ""),
                             command=task.get("command", ""),
                             timeout=task.get("timeout", 3600),

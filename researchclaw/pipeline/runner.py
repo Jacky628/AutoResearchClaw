@@ -435,13 +435,14 @@ def execute_pipeline(
     config: RCConfig,
     adapters: AdapterBundle,
     from_stage: Stage = Stage.TOPIC_INIT,
+    to_stage: Stage | None = None,
     auto_approve_gates: bool = False,
     stop_on_gate: bool = False,
     skip_noncritical: bool = False,
     kb_root: Path | None = None,
     cancel_event: "threading.Event | None" = None,
 ) -> list[StageResult]:
-    """Execute pipeline stages sequentially from `from_stage` and write summary."""
+    """Execute pipeline stages sequentially from *from_stage* to *to_stage* (inclusive)."""
 
     results: list[StageResult] = []
     started = False
@@ -649,6 +650,12 @@ def execute_pipeline(
 
         if result.status == StageStatus.DONE:
             _write_checkpoint(run_dir, stage, run_id, adapters=adapters)
+
+        # ── Stop after to_stage if specified ──
+        if to_stage is not None and stage == to_stage:
+            logger.info("[%s] Reached --to-stage %s, stopping.", run_id, stage.name)
+            print(f"[{run_id}] Reached --to-stage {stage.name}, stopping pipeline.")
+            break
 
         # --- Experiment diagnosis + repair after Stage 14 (result_analysis) ---
         if (

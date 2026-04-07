@@ -101,11 +101,17 @@ class AnthropicAdapter:
                 else _JSON_MODE_INSTRUCTION
             )
 
-        # BUG-DA8-05: Thinking-enabled Claude models require temperature=1.0
+        # Thinking-enabled Claude models require temperature=1.0
         # and do not accept other temperature values.
         _THINKING_MODELS = ("claude-3-7", "claude-4")
         _is_thinking = any(model.startswith(p) for p in _THINKING_MODELS)
-        if _is_thinking:
+        if _is_thinking and temperature != 1.0:
+            logger.warning(
+                "Overriding temperature=%.2f → 1.0 for thinking model %s "
+                "(required by Anthropic API).",
+                temperature,
+                model,
+            )
             temperature = 1.0
 
         # Build Anthropic request

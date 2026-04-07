@@ -411,7 +411,11 @@ def _read_prior_artifact(run_dir: Path, filename: str) -> str | None:
     for stage_subdir in sorted(run_dir.glob("stage-*"), key=_stage_sort_key, reverse=True):
         candidate = stage_subdir / filename
         if candidate.is_file():
-            return candidate.read_text(encoding="utf-8")
+            try:
+                return candidate.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError) as exc:
+                logger.warning("Cannot read %s: %s — skipping", candidate, exc)
+                continue
         if filename.endswith("/") and (stage_subdir / filename.rstrip("/")).is_dir():
             return str(stage_subdir / filename.rstrip("/"))
     return None

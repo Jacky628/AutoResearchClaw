@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 from researchclaw.mcp.tools import TOOL_DEFINITIONS, list_tool_names
 
 logger = logging.getLogger(__name__)
+
+_VALID_RUN_ID = re.compile(r"^[a-zA-Z0-9_\-]+$")
+
+
+def _validated_run_dir(run_id: str) -> Path:
+    """Validate run_id to prevent path traversal and return the run directory."""
+    if not _VALID_RUN_ID.match(run_id):
+        raise ValueError(f"Invalid run_id: {run_id!r}")
+    run_dir = Path("artifacts") / run_id
+    # Ensure resolved path is still under artifacts/
+    if not run_dir.resolve().is_relative_to(Path("artifacts").resolve()):
+        raise ValueError(f"Invalid run_id: {run_id!r}")
+    return run_dir
 
 
 class ResearchClawMCPServer:
@@ -67,7 +81,7 @@ class ResearchClawMCPServer:
     async def _handle_get_status(self, args: dict[str, Any]) -> dict[str, Any]:
         """Get pipeline status."""
         run_id = args["run_id"]
-        run_dir = Path(f"artifacts/{run_id}")
+        run_dir = _validated_run_dir(run_id)
         if not run_dir.exists():
             return {"success": False, "error": f"Run not found: {run_id}"}
         # Read checkpoint if available
@@ -80,7 +94,7 @@ class ResearchClawMCPServer:
     async def _handle_get_results(self, args: dict[str, Any]) -> dict[str, Any]:
         """Get experiment results."""
         run_id = args["run_id"]
-        run_dir = Path(f"artifacts/{run_id}")
+        run_dir = _validated_run_dir(run_id)
         results_file = run_dir / "experiment_results.json"
         if results_file.exists():
             data = json.loads(results_file.read_text(encoding="utf-8"))
@@ -108,7 +122,7 @@ class ResearchClawMCPServer:
         """Get generated paper."""
         run_id = args["run_id"]
         fmt = args.get("format", "markdown")
-        run_dir = Path(f"artifacts/{run_id}")
+        run_dir = _validated_run_dir(run_id)
         if fmt == "latex":
             paper_file = run_dir / "paper.tex"
         else:

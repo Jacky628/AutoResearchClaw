@@ -160,6 +160,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     topic = cast(str | None, args.topic)
     output = cast(str | None, args.output)
     from_stage_name = cast(str | None, args.from_stage)
+    to_stage_name = cast(str | None, getattr(args, "to_stage", None))
     auto_approve = cast(bool, args.auto_approve)
     skip_preflight = cast(bool, args.skip_preflight)
     resume = cast(bool, args.resume)
@@ -302,6 +303,27 @@ def cmd_run(args: argparse.Namespace) -> int:
             from_stage = resumed
             print(f"Resuming from checkpoint: Stage {int(from_stage)}: {from_stage.name}")
 
+    # --- Determine stop stage ---
+    to_stage: Stage | None = None
+    if to_stage_name:
+        try:
+            to_stage = Stage[to_stage_name.upper()]
+        except KeyError:
+            valid = ", ".join(s.name for s in Stage)
+            print(
+                f"Error: unknown stage '{to_stage_name}'. "
+                f"Valid stages: {valid}",
+                file=sys.stderr,
+            )
+            return 1
+        if int(to_stage) < int(from_stage):
+            print(
+                f"Error: --to-stage {to_stage.name} (stage {int(to_stage)}) "
+                f"must be >= --from-stage {from_stage.name} (stage {int(from_stage)})",
+                file=sys.stderr,
+            )
+            return 1
+
     # --- Create HITL session and wire to adapters ---
     if hitl_config and hitl_config.enabled:
         try:
@@ -331,6 +353,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if hitl_config and hitl_config.enabled:
         print(f"  HITL:    {hitl_config.mode}")
     print(f"  From:    Stage {int(from_stage)}: {from_stage.name}")
+    if to_stage:
+        print(f"  To:      Stage {int(to_stage)}: {to_stage.name}")
 
     # Hint: OpenCode beast mode
     exp_cfg = getattr(config, "experiment", None)
@@ -348,6 +372,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         config=config,
         adapters=adapters,
         from_stage=from_stage,
+        to_stage=to_stage,
         auto_approve_gates=auto_approve,
         stop_on_gate=stop_on_gate,
         skip_noncritical=skip_noncritical,
@@ -988,6 +1013,9 @@ def main(argv: list[str] | None = None) -> int:
     _ = run_p.add_argument("--output", "-o", help="Output directory")
     _ = run_p.add_argument(
         "--from-stage", help="Start from a specific stage (e.g. PAPER_OUTLINE)"
+    )
+    _ = run_p.add_argument(
+        "--to-stage", help="Stop after this stage completes (e.g. EXPERIMENT_DESIGN)"
     )
     _ = run_p.add_argument(
         "--auto-approve", action="store_true", help="Auto-approve gate stages"

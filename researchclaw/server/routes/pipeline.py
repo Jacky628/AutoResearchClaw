@@ -49,6 +49,7 @@ class PipelineStartResponse(BaseModel):
 # In-memory tracking of the active run (single-tenant MVP)
 _active_run: dict[str, Any] | None = None
 _run_task: asyncio.Task[Any] | None = None
+_run_lock = asyncio.Lock()
 
 
 def _get_app_state() -> dict[str, Any]:
@@ -62,32 +63,33 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
     """Start a new pipeline run."""
     global _active_run, _run_task
 
-    if _active_run and _active_run.get("status") == "running":
-        raise HTTPException(status_code=409, detail="A pipeline is already running")
+    async with _run_lock:
+        if _active_run and _active_run.get("status") == "running":
+            raise HTTPException(status_code=409, detail="A pipeline is already running")
 
-    state = _get_app_state()
-    config = state["config"]
+        state = _get_app_state()
+        config = state["config"]
 
-    if req.topic:
-        import dataclasses
-        new_research = dataclasses.replace(config.research, topic=req.topic)
-        config = dataclasses.replace(config, research=new_research)
+        if req.topic:
+            import dataclasses
+            new_research = dataclasses.replace(config.research, topic=req.topic)
+            config = dataclasses.replace(config, research=new_research)
 
-    import hashlib
-    from datetime import datetime, timezone
+        import hashlib
+        from datetime import datetime, timezone
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    topic_hash = hashlib.sha256(config.research.topic.encode()).hexdigest()[:6]
-    run_id = f"rc-{ts}-{topic_hash}"
-    run_dir = _validated_run_dir(run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        topic_hash = hashlib.sha256(config.research.topic.encode()).hexdigest()[:6]
+        run_id = f"rc-{ts}-{topic_hash}"
+        run_dir = _validated_run_dir(run_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
 
-    _active_run = {
-        "run_id": run_id,
-        "status": "running",
-        "output_dir": str(run_dir),
-        "topic": config.research.topic,
-    }
+        _active_run = {
+            "run_id": run_id,
+            "status": "running",
+            "output_dir": str(run_dir),
+            "topic": config.research.topic,
+        }
 
     async def _run_in_background() -> None:
         global _active_run

@@ -115,7 +115,7 @@ class ResearchPRMGate:
         self,
         api_base: str,
         api_key: str,
-        model: str = "gpt-5.4",
+        model: str = "gpt-4o-mini",
         votes: int = 3,
         temperature: float = 0.6,
     ) -> None:
@@ -146,7 +146,7 @@ class ResearchPRMGate:
         return cls(
             api_base=api_base,
             api_key=api_key,
-            model=getattr(prm_config, "model", "gpt-5.4"),
+            model=getattr(prm_config, "model", "gpt-4o-mini"),
             votes=getattr(prm_config, "votes", 3),
             temperature=getattr(prm_config, "temperature", 0.6),
         )
