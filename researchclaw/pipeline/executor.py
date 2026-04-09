@@ -492,8 +492,13 @@ def _run_collaboration_loop(
 
         # Get AI response
         if llm_client is not None:
+            rev_before = len(collab.revision_history)
             response = collab.ai_responds(llm_client)
             print(f"\n  AI > {response}\n")
+            # Report any artifact edits the AI made
+            for rev in collab.revision_history[rev_before:]:
+                if rev.get("action") == "ai_proposal":
+                    print(f"  [AI edited: {rev['file']}]")
         else:
             print("  AI > [LLM not available for chat — your input is recorded]\n")
 

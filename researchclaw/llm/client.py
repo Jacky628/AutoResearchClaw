@@ -31,6 +31,7 @@ _NEW_PARAM_MODELS = frozenset(
         "gpt-5",
         "gpt-5.1",
         "gpt-5.2",
+        "gpt-5.3",
         "gpt-5.4",
     }
 )
