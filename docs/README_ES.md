@@ -757,7 +757,7 @@ Inspirado por:
 
 ---
 
-## ⚖️ Ética y uso responsable
+## ⚠️ Ética y uso responsable
 
 AutoResearchClaw es una herramienta de asistencia a la investigación, no un sustituto de los investigadores humanos. Pedimos a todos los usuarios que respeten los siguientes principios:
 

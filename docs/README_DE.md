@@ -757,7 +757,7 @@ Inspiriert von:
 
 ---
 
-## ⚖️ Ethik und verantwortungsvolle Nutzung
+## ⚠️ Ethik und verantwortungsvolle Nutzung
 
 AutoResearchClaw ist ein Forschungshilfswerkzeug, kein Ersatz für menschliche Forscher. Wir bitten alle Nutzer, die folgenden Grundsätze einzuhalten:
 
