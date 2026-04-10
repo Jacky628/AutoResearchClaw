@@ -466,7 +466,8 @@ def _run_collaboration_loop(
     )
 
     print(f"\n  Entering collaboration mode for Stage {stage_num} ({stage.name})")
-    print("  Type your messages. Enter 'done' to finalize, 'abort' to cancel.\n")
+    print("  Commands: 'done' finalize | 'abort' cancel | 'show <file>' view | 'edit <file>' edit | 'files' list")
+    print("  Or type a message to chat with AI.\n")
 
     # Simple collaboration loop via stdin
     while True:
@@ -479,15 +480,60 @@ def _run_collaboration_loop(
         if not user_input:
             continue
 
-        if user_input.lower() in ("done", "approve", "finalize"):
+        lower = user_input.lower()
+
+        if lower in ("done", "approve", "finalize"):
             collab.finalize()
             print("  Collaboration finalized.")
             break
 
-        if user_input.lower() in ("abort", "quit", "cancel"):
+        if lower in ("abort", "quit", "cancel"):
             print("  Collaboration cancelled.")
             break
 
+        # List available artifacts
+        if lower == "files":
+            for fname in collab.shared_artifacts:
+                mod = " [modified]" if fname in collab._modified_artifacts else ""
+                print(f"    {fname}{mod}")
+            continue
+
+        # Show artifact content
+        if lower.startswith("show "):
+            fname = user_input[5:].strip()
+            if fname in collab.shared_artifacts:
+                content = collab.shared_artifacts[fname]
+                print(f"\n  --- {fname} ({len(content)} chars) ---")
+                print(content[:3000])
+                if len(content) > 3000:
+                    print(f"  ... ({len(content) - 3000} chars truncated)")
+                print(f"  --- end {fname} ---\n")
+            else:
+                print(f"  File not found: {fname}. Use 'files' to list available artifacts.")
+            continue
+
+        # Interactive edit: read from stdin until <<<END>>>
+        if lower.startswith("edit "):
+            fname = user_input[5:].strip()
+            if fname not in collab.shared_artifacts:
+                print(f"  File not found: {fname}. Use 'files' to list available artifacts.")
+                continue
+            print(f"  Editing {fname}. Paste new content, then type <<<END>>> on its own line:")
+            lines = []
+            while True:
+                try:
+                    line = input()
+                except (EOFError, KeyboardInterrupt):
+                    break
+                if line.strip() == "<<<END>>>":
+                    break
+                lines.append(line)
+            new_content = "\n".join(lines)
+            collab.human_edits_artifact(fname, new_content)
+            print(f"  [{fname} updated — {len(new_content)} chars written]")
+            continue
+
+        # Regular chat message
         collab.human_says(user_input)
 
         # Get AI response

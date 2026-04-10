@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -332,11 +333,24 @@ def cmd_run(args: argparse.Namespace) -> int:
                 config=hitl_config,
                 run_dir=run_dir,
             )
-            # Wire CLI adapter for interactive input
-            from researchclaw.hitl.adapters.cli_adapter import CLIAdapter
+            # Check for scripted intervention file (env var or CLI flag)
+            interventions_file = os.environ.get("HITL_INTERVENTIONS_FILE", "")
+            if not interventions_file:
+                interventions_file = getattr(args, "interventions", None) or ""
+            if interventions_file and Path(interventions_file).is_file():
+                from researchclaw.hitl.adapters.scripted_adapter import (
+                    ScriptedHITLAdapter,
+                )
 
-            cli_adapter = CLIAdapter(run_dir=run_dir)
-            hitl_session.set_input_callback(cli_adapter.collect_input)
+                scripted = ScriptedHITLAdapter.from_file(interventions_file)
+                hitl_session.set_input_callback(scripted.collect_input)
+                print(f"  HITL:    scripted ({len(scripted.pending_stages)} interventions)")
+            else:
+                # Wire CLI adapter for interactive input
+                from researchclaw.hitl.adapters.cli_adapter import CLIAdapter
+
+                cli_adapter = CLIAdapter(run_dir=run_dir)
+                hitl_session.set_input_callback(cli_adapter.collect_input)
             adapters.hitl = hitl_session
         except Exception as _hitl_exc:
             import logging
@@ -1040,6 +1054,11 @@ def main(argv: list[str] | None = None) -> int:
     _ = run_p.add_argument(
         "--no-graceful-degradation", action="store_true",
         help="Disable graceful degradation: fail pipeline on quality gate failure"
+    )
+    _ = run_p.add_argument(
+        "--interventions",
+        default=None,
+        help="Path to scripted HITL interventions JSON file",
     )
     val_p = sub.add_parser("validate", help="Validate config file")
     _ = val_p.add_argument(
