@@ -609,9 +609,9 @@ llm:
 
 # 通过 `researchclaw init` 可直接选择以下预设：
 #   volcengine                 -> VOLCENGINE_API_KEY
-#   volcengine-coding-plan     -> VOLCENGINE_CODING_PLAN_API_KEY
+#   volcengine-coding-plan     -> VOLCENGINE_API_KEY
 #   byteplus                   -> BYTEPLUS_API_KEY
-#   byteplus-coding-plan       -> BYTEPLUS_CODING_PLAN_API_KEY
+#   byteplus-coding-plan       -> BYTEPLUS_API_KEY
 
 # === 实验 ===
 experiment:

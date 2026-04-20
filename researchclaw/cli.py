@@ -649,9 +649,9 @@ _PROVIDER_CHOICES = {
     "3": ("deepseek", "DEEPSEEK_API_KEY"),
     "4": ("minimax", "MINIMAX_API_KEY"),
     "5": ("volcengine", "VOLCENGINE_API_KEY"),
-    "6": ("volcengine-coding-plan", "VOLCENGINE_CODING_PLAN_API_KEY"),
+    "6": ("volcengine-coding-plan", "VOLCENGINE_API_KEY"),
     "7": ("byteplus", "BYTEPLUS_API_KEY"),
-    "8": ("byteplus-coding-plan", "BYTEPLUS_CODING_PLAN_API_KEY"),
+    "8": ("byteplus-coding-plan", "BYTEPLUS_API_KEY"),
     "9": ("acp", ""),
 }
 
@@ -754,12 +754,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("  5) volcengine   (requires VOLCENGINE_API_KEY)")
         print(
             "  6) volcengine-coding-plan"
-            " (requires VOLCENGINE_CODING_PLAN_API_KEY)"
+            " (requires VOLCENGINE_API_KEY)"
         )
         print("  7) byteplus     (requires BYTEPLUS_API_KEY)")
         print(
             "  8) byteplus-coding-plan"
-            " (requires BYTEPLUS_CODING_PLAN_API_KEY)"
+            " (requires BYTEPLUS_API_KEY)"
         )
         print("  9) acp          (local AI agent — no API key needed)")
         try:

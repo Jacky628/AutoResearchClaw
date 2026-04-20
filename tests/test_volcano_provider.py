@@ -37,7 +37,7 @@ def test_provider_presets_include_volcano_variants(
         ),
         (
             "volcengine-coding-plan",
-            "VOLCENGINE_CODING_PLAN_API_KEY",
+            "VOLCENGINE_API_KEY",
             "https://ark.cn-beijing.volces.com/api/coding/v3",
             "doubao-seed-2.0-code",
         ),
@@ -49,7 +49,7 @@ def test_provider_presets_include_volcano_variants(
         ),
         (
             "byteplus-coding-plan",
-            "BYTEPLUS_CODING_PLAN_API_KEY",
+            "BYTEPLUS_API_KEY",
             "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
             "dola-seed-2.0-pro",
         ),
@@ -85,9 +85,9 @@ def test_from_rc_config_uses_volcano_presets(
     ("choice", "provider", "api_key_env"),
     [
         ("5", "volcengine", "VOLCENGINE_API_KEY"),
-        ("6", "volcengine-coding-plan", "VOLCENGINE_CODING_PLAN_API_KEY"),
+        ("6", "volcengine-coding-plan", "VOLCENGINE_API_KEY"),
         ("7", "byteplus", "BYTEPLUS_API_KEY"),
-        ("8", "byteplus-coding-plan", "BYTEPLUS_CODING_PLAN_API_KEY"),
+        ("8", "byteplus-coding-plan", "BYTEPLUS_API_KEY"),
     ],
 )
 def test_cli_provider_choices_include_volcano_variants(

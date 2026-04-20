@@ -51,7 +51,7 @@ _WIZARD_PROVIDER_DEFAULTS = {
     },
     "volcengine-coding-plan": {
         "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
-        "api_key_env": "VOLCENGINE_CODING_PLAN_API_KEY",
+        "api_key_env": "VOLCENGINE_API_KEY",
         "primary_model": "doubao-seed-2.0-code",
         "fallback_models": [
             "doubao-seed-2.0-pro",
@@ -76,7 +76,7 @@ _WIZARD_PROVIDER_DEFAULTS = {
     },
     "byteplus-coding-plan": {
         "base_url": "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
-        "api_key_env": "BYTEPLUS_CODING_PLAN_API_KEY",
+        "api_key_env": "BYTEPLUS_API_KEY",
         "primary_model": "dola-seed-2.0-pro",
         "fallback_models": [
             "dola-seed-2.0-lite",

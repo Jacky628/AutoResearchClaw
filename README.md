@@ -609,9 +609,9 @@ llm:
 
 # Volcengine / BytePlus presets via `researchclaw init`
 #   volcengine                 -> VOLCENGINE_API_KEY
-#   volcengine-coding-plan     -> VOLCENGINE_CODING_PLAN_API_KEY
+#   volcengine-coding-plan     -> VOLCENGINE_API_KEY
 #   byteplus                   -> BYTEPLUS_API_KEY
-#   byteplus-coding-plan       -> BYTEPLUS_CODING_PLAN_API_KEY
+#   byteplus-coding-plan       -> BYTEPLUS_API_KEY
 
 # === Experiment ===
 experiment:

@@ -339,7 +339,7 @@ def test_cmd_init_supports_volcengine_coding_plan_choice(
     content = (tmp_path / "config.arc.yaml").read_text(encoding="utf-8")
     assert 'provider: "volcengine-coding-plan"' in content
     assert 'base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"' in content
-    assert 'api_key_env: "VOLCENGINE_CODING_PLAN_API_KEY"' in content
+    assert 'api_key_env: "VOLCENGINE_API_KEY"' in content
     assert 'primary_model: "doubao-seed-2.0-code"' in content
 
 
