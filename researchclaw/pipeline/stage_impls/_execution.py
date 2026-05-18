@@ -325,6 +325,76 @@ def _execute_experiment_run(
             (runs_dir / f"{_safe_filename(run_id)}.json").write_text(
                 json.dumps(payload, indent=2), encoding="utf-8"
             )
+    # ---- Hard guard: block pipeline when experiment produced no real data ----
+    # Issue #165 / fabrication-guard: An experiment that completes in seconds
+    # with zero metrics (or only noise) must NOT proceed to paper writing.
+    # The old code always returned DONE, which let fabricated papers through.
+    _has_real_metrics = False
+    if mode in ("sandbox", "docker"):
+        # Check that we have at least one non-trivial float metric
+        _real_metric_count = sum(
+            1 for k, v in (effective_metrics or {}).items()
+            if isinstance(v, (int, float)) and not math.isnan(v) and not math.isinf(v)
+        )
+        _has_real_metrics = _real_metric_count > 0
+        if not _has_real_metrics and run_status == "failed":
+            logger.error(
+                "Stage 12: Experiment FAILED and produced zero real metrics. "
+                "Refusing to mark as DONE to prevent fabricated results downstream."
+            )
+            return StageResult(
+                stage=Stage.EXPERIMENT_RUN,
+                status=StageStatus.FAILED,
+                artifacts=("runs/",),
+                evidence_refs=("stage-12/runs/",),
+                error=(
+                    f"Experiment failed with zero real metrics "
+                    f"(status={run_status}, elapsed={result.elapsed_sec:.1f}s). "
+                    f"Pipeline must not proceed to paper writing without experiment data."
+                ),
+            )
+        if not _has_real_metrics and _stdout_has_failure:
+            logger.error(
+                "Stage 12: Experiment crashed (failure signals in stdout) with zero "
+                "real metrics. Refusing to mark as DONE."
+            )
+            return StageResult(
+                stage=Stage.EXPERIMENT_RUN,
+                status=StageStatus.FAILED,
+                artifacts=("runs/",),
+                evidence_refs=("stage-12/runs/",),
+                error=(
+                    f"Experiment crashed with failure signals in stdout and zero "
+                    f"real metrics (elapsed={result.elapsed_sec:.1f}s). "
+                    f"Pipeline must not proceed without experiment data."
+                ),
+            )
+        # Anomaly detection: suspiciously fast completion with empty metrics
+        if (
+            run_status == "completed"
+            and not _has_real_metrics
+            and result.elapsed_sec is not None
+            and result.elapsed_sec < 30.0
+        ):
+            logger.error(
+                "Stage 12: Experiment 'completed' in %.1fs with zero real metrics "
+                "(time_budget=%ds). This is almost certainly a crash that was "
+                "misclassified. Refusing to mark as DONE.",
+                result.elapsed_sec,
+                config.experiment.time_budget_sec,
+            )
+            return StageResult(
+                stage=Stage.EXPERIMENT_RUN,
+                status=StageStatus.FAILED,
+                artifacts=("runs/",),
+                evidence_refs=("stage-12/runs/",),
+                error=(
+                    f"Experiment 'completed' in {result.elapsed_sec:.1f}s with zero "
+                    f"real metrics (budget was {config.experiment.time_budget_sec}s). "
+                    f"Likely a misclassified crash. Pipeline must not proceed "
+                    f"without experiment data."
+                ),
+            )
     return StageResult(
         stage=Stage.EXPERIMENT_RUN,
         status=StageStatus.DONE,

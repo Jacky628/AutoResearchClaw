@@ -138,8 +138,10 @@ MAX_DECISION_PIVOTS: int = 2  # Prevent infinite loops
 
 NONCRITICAL_STAGES: frozenset[Stage] = frozenset(
     {
-        Stage.QUALITY_GATE,       # 20: low quality should warn, not block deliverables
         Stage.KNOWLEDGE_ARCHIVE,  # 21: archival doesn't affect paper output
+        # QUALITY_GATE (stage 20) is now CRITICAL — removed from noncritical set.
+        # Rationale: A pipeline that skips the quality gate can export fabricated
+        # results (see issue #165). Low quality MUST block, not just warn.
         # T3.4: CITATION_VERIFY removed — hallucinated citations MUST block export
     }
 )
