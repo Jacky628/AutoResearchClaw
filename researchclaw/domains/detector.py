@@ -360,13 +360,20 @@ _KEYWORD_RULES: list[tuple[list[str], str]] = [
 ]
 
 
+_SHORT_KW_LEN = 5
+
+
 def _keyword_detect(text: str) -> str | None:
     """Match text against keyword rules. Returns domain_id or None."""
     lower = text.lower()
     for keywords, domain_id in _KEYWORD_RULES:
         for kw in keywords:
-            if kw in lower:
-                return domain_id
+            if len(kw) < _SHORT_KW_LEN:
+                if re.search(r"\b" + re.escape(kw) + r"\b", lower):
+                    return domain_id
+            else:
+                if kw in lower:
+                    return domain_id
     return None
 
 
