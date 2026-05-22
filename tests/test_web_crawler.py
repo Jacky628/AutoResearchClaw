@@ -205,6 +205,52 @@ class TestCheckUrlSsrf:
         err = check_url_ssrf("http://")
         assert err is not None
 
+    def test_rejects_backslash(self):
+        err = check_url_ssrf("http://example.com\\@evil.com/")
+        assert err is not None
+        assert "backslash" in err.lower()
+
+    def test_rejects_userinfo(self):
+        err = check_url_ssrf("http://user:pass@example.com/")
+        assert err is not None
+        assert "userinfo" in err.lower()
+
+    def test_rejects_zero_address(self):
+        # 0.0.0.0 routes to localhost on many platforms — must be blocked
+        err = check_url_ssrf("http://0.0.0.0/")
+        assert err is not None
+
+    def test_rejects_ipv6_loopback(self):
+        err = check_url_ssrf("http://[::1]/")
+        assert err is not None
+
+    def test_rejects_ipv6_mapped_loopback(self):
+        # IPv4-mapped IPv6 form of 127.0.0.1
+        err = check_url_ssrf("http://[::ffff:127.0.0.1]/")
+        assert err is not None
+
+    def test_rejects_when_any_resolved_record_is_private(self):
+        """Multi-record DNS: even if the first record is public, a private
+        record anywhere in the result set must cause the URL to be blocked.
+        The HTTP client is free to connect to any returned address."""
+        fake_records = [
+            (None, None, None, "", ("8.8.8.8", 0)),
+            (None, None, None, "", ("127.0.0.1", 0)),
+        ]
+        with patch("researchclaw.web._ssrf.socket.getaddrinfo", return_value=fake_records):
+            err = check_url_ssrf("http://multi.example.test/")
+        assert err is not None
+        assert "127.0.0.1" in err
+
+    def test_allows_when_all_resolved_records_are_public(self):
+        fake_records = [
+            (None, None, None, "", ("8.8.8.8", 0)),
+            (None, None, None, "", ("1.1.1.1", 0)),
+        ]
+        with patch("researchclaw.web._ssrf.socket.getaddrinfo", return_value=fake_records):
+            err = check_url_ssrf("http://public.example.test/")
+        assert err is None
+
 
 # ---------------------------------------------------------------------------
 # Crawler SSRF integration
