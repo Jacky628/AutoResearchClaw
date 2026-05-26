@@ -309,8 +309,12 @@ _KEYWORD_RULES: list[tuple[list[str], str]] = [
     # Chemistry
     (["quantum chemistry", "dft", "hartree-fock", "pyscf", "ccsd",
       "molecular orbital", "basis set"], "chemistry_qm"),
-    (["molecular property", "smiles", "rdkit", "fingerprint", "drug",
-      "binding affinity", "admet"], "chemistry_molprop"),
+    # NOTE: bare "drug" removed — too broad, was mis-matching
+    # "drug repurposing" / "drug-target" network-medicine topics into
+    # chemistry_molprop and injecting RDKit/SMILES/QM9 guidance into
+    # network-medicine experiments. Use specific cheminformatics terms instead.
+    (["molecular property prediction", "smiles", "rdkit", "morgan fingerprint",
+      "ecfp", "binding affinity", "admet", "qsar"], "chemistry_molprop"),
     (["chemistry", "molecule", "reaction", "catalyst"], "chemistry_general"),
 
     # Biology
