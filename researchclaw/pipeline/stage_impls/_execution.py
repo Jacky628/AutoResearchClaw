@@ -52,6 +52,7 @@ def _execute_resource_planning(
 ) -> StageResult:
     exp_plan = _read_prior_artifact(run_dir, "exp_plan.yaml") or ""
     schedule: dict[str, Any] | None = None
+    schedule_source = "template"
     if llm is not None:
         _pm = prompts or PromptManager()
         _overlay = _get_evolution_overlay(run_dir, "resource_planning")
@@ -64,8 +65,19 @@ def _execute_resource_planning(
             max_tokens=sp.max_tokens,
         )
         parsed = _safe_json_loads(resp.content, {})
-        if isinstance(parsed, dict):
+        if (
+            isinstance(parsed, dict)
+            and isinstance(parsed.get("tasks"), list)
+            and parsed["tasks"]
+        ):
             schedule = parsed
+            schedule_source = "model"
+        elif isinstance(parsed, dict):
+            logger.warning(
+                "Stage 11: model response missing/empty 'tasks' list "
+                "(received keys: %s); falling back to template",
+                sorted(parsed.keys()),
+            )
     if schedule is None:
         schedule = {
             "tasks": [
@@ -90,6 +102,7 @@ def _execute_resource_planning(
             "generated": _utcnow_iso(),
         }
     schedule.setdefault("generated", _utcnow_iso())
+    schedule["_meta"] = {"source": schedule_source}
     (stage_dir / "schedule.json").write_text(
         json.dumps(schedule, indent=2), encoding="utf-8"
     )

@@ -342,6 +342,44 @@ def _execute_experiment_design(
             "risks": ["validity threats", "confounding variables"],
             "compute_budget": {"max_gpu": 1, "max_hours": 4},
         }
+
+    # Schema-deficit guard: when the LLM returned a parseable dict that
+    # bypassed every fallback cascade (because plan was never None) but
+    # lacks any actual experiment content, pause rather than silently
+    # advancing a content-empty plan to code generation.  Use
+    # _normalize_plan_field so the guard accepts every shape the rest of
+    # this file already supports (str, dict, list[str], list[dict]).
+    _required_any = ("baselines", "proposed_methods", "ablations")
+    _normalized = {k: _normalize_plan_field(plan.get(k)) for k in _required_any}
+    if not any(_normalized.values()):
+        (stage_dir / "plan_meta.json").write_text(
+            json.dumps(
+                {
+                    "outcome": "model_response_schema_deficient",
+                    "missing_required_keys": [
+                        k for k in _required_any if not _normalized[k]
+                    ],
+                    "received_keys": sorted(plan.keys()),
+                    "note": (
+                        "Experiment plan parsed but lacked baselines, proposed_methods, "
+                        "and ablations. Pipeline paused; refine the prompt or rerun stage."
+                    ),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        logger.warning(
+            "Stage 9: model plan parsed but missing required content keys — pausing pipeline"
+        )
+        return StageResult(
+            stage=Stage.EXPERIMENT_DESIGN,
+            status=StageStatus.PAUSED,
+            artifacts=("plan_meta.json",),
+            error="Experiment plan missing baselines/proposed_methods/ablations",
+            evidence_refs=("stage-09/plan_meta.json",),
+            decision="schema_deficient",
+        )
     # ── BA: BenchmarkAgent — intelligent dataset/baseline selection ──────
     _benchmark_plan = None
     # BUG-40: Skip BenchmarkAgent for non-ML domains — it has no relevant

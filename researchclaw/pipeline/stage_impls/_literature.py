@@ -765,6 +765,7 @@ def _execute_literature_screen(
             artifacts=("screen_meta.json",),
             error="Model returned empty shortlist after strict screening",
             evidence_refs=("stage-05/screen_meta.json",),
+            decision="rejected_all",
         )
     if not shortlist:
         rows = (
