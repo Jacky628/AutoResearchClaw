@@ -2281,9 +2281,53 @@ class TestDataIntegrityBlock:
             stage_dir, run_dir, rc_config, adapters, llm=llm
         )
 
-        assert result.status == StageStatus.FAILED
+        # PAUSED with explicit decision + meta artifact (cleanup of the
+        # previous FAILED + "unknown error" framing).
+        assert result.status == StageStatus.PAUSED
+        assert result.decision == "blocked_no_metrics"
+        assert "no real metrics" in (result.error or "")
         draft = (stage_dir / "paper_draft.md").read_text(encoding="utf-8")
         assert "Blocked" in draft or "BLOCKED" in draft or "no metrics" in draft.lower()
+        meta = json.loads((stage_dir / "paper_meta.json").read_text(encoding="utf-8"))
+        assert meta["outcome"] == "blocked_no_metrics"
+        # LLM should NOT have been called
+        assert len(llm.calls) == 0
+
+    def test_paper_draft_blocked_with_simulated_data(
+        self, tmp_path: Path, run_dir: Path, rc_config: RCConfig, adapters: AdapterBundle,
+    ) -> None:
+        # All run files report status="simulated" → R10 block fires.
+        # Post-cleanup: PAUSED with paper_meta.json and decision="blocked_simulated_data".
+        _write_prior_artifact(run_dir, 16, "outline.md", "# Outline\n## Abstract\n")
+        runs_dir = run_dir / "stage-12" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(2):
+            (runs_dir / f"run-{i + 1}.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": f"run-{i + 1}",
+                        "status": "simulated",
+                        "key_metrics": {"primary_metric": 0.3 + i * 0.03},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        stage_dir = run_dir / "stage-17"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+
+        llm = FakeLLMClient("should not be called")
+        result = rc_executor._execute_paper_draft(
+            stage_dir, run_dir, rc_config, adapters, llm=llm
+        )
+
+        assert result.status == StageStatus.PAUSED
+        assert result.decision == "blocked_simulated_data"
+        assert "simulated" in (result.error or "").lower()
+        assert (stage_dir / "paper_draft.md").exists()
+        meta = json.loads((stage_dir / "paper_meta.json").read_text(encoding="utf-8"))
+        assert meta["outcome"] == "blocked_simulated_data"
+        assert meta.get("is_literature_first_topic") is False
         # LLM should NOT have been called
         assert len(llm.calls) == 0
 
