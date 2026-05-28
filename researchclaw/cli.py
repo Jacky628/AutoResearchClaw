@@ -775,6 +775,7 @@ _PROVIDER_CHOICES = {
     "3": ("deepseek", "DEEPSEEK_API_KEY"),
     "4": ("minimax", "MINIMAX_API_KEY"),
     "5": ("acp", ""),
+    "6": ("ollama", ""),
 }
 
 _PROVIDER_URLS = {
@@ -782,6 +783,7 @@ _PROVIDER_URLS = {
     "openrouter": "https://openrouter.ai/api/v1",
     "deepseek": "https://api.deepseek.com/v1",
     "minimax": "https://api.minimaxi.com/v1",
+    "ollama": "http://localhost:11434/v1",
 }
 
 _PROVIDER_MODELS = {
@@ -792,6 +794,7 @@ _PROVIDER_MODELS = {
     ),
     "deepseek": ("deepseek-chat", ["deepseek-reasoner"]),
     "minimax": ("MiniMax-M2.5", ["MiniMax-M2.5-highspeed"]),
+    "ollama": ("llama3.2", ["mistral", "qwen2.5:7b"]),
 }
 
 
@@ -828,6 +831,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("  3) deepseek     (requires DEEPSEEK_API_KEY)")
         print("  4) minimax      (requires MINIMAX_API_KEY)")
         print("  5) acp          (local AI agent — no API key needed)")
+        print("  6) ollama       (local Ollama server — no API key needed)")
         try:
             raw = input("Choice [1]: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -850,6 +854,14 @@ def cmd_init(args: argparse.Namespace) -> int:
             'base_url: "https://api.openai.com/v1"', 'base_url: ""'
         )
         content = content.replace('api_key_env: "OPENAI_API_KEY"', 'api_key_env: ""')
+    elif provider == "ollama":
+        # Ollama runs locally — set base_url, clear api_key_env, set dummy key
+        base_url = _PROVIDER_URLS["ollama"]
+        content = content.replace(
+            'base_url: "https://api.openai.com/v1"', f'base_url: "{base_url}"'
+        )
+        content = content.replace('api_key_env: "OPENAI_API_KEY"', 'api_key_env: ""')
+        content = content.replace('api_key: ""', 'api_key: "ollama"')
     else:
         base_url = _PROVIDER_URLS.get(provider, "https://api.openai.com/v1")
         content = content.replace(
@@ -878,6 +890,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("  1. Ensure your ACP agent is installed and on PATH")
         print("  2. Edit config.arc.yaml to set llm.acp.agent if needed")
         print("  3. Run: researchclaw doctor")
+    elif provider == "ollama":
+        print("\nNext steps:")
+        print("  1. Ensure Ollama is running: ollama serve")
+        print("  2. Pull your model: ollama pull llama3.2")
+        print("  3. Edit config.arc.yaml to set llm.primary_model to your model name")
+        print("  4. Run: researchclaw doctor")
     else:
         env_var = api_key_env or "OPENAI_API_KEY"
         print(f"\nNext steps:")
