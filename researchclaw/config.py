@@ -1068,8 +1068,10 @@ def validate_config(
 
     llm_provider = _get_by_path(data, "llm.provider")
     for key in REQUIRED_FIELDS:
-        # ACP provider doesn't need base_url or api_key_env
-        if llm_provider == "acp" and key in ("llm.base_url", "llm.api_key_env"):
+        # ACP and Ollama don't need api_key_env (local/keyless providers)
+        if llm_provider in ("acp", "ollama") and key == "llm.api_key_env":
+            continue
+        if llm_provider == "acp" and key == "llm.base_url":
             continue
         value = _get_by_path(data, key)
         if _is_blank(value):

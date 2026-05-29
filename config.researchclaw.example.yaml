@@ -50,6 +50,14 @@ llm:
   # primary_model: "MiniMax-M2.5"
   # fallback_models:
   #   - "MiniMax-M2.5-highspeed"
+  # --- Ollama (local) example ---
+  # provider: "ollama"
+  # base_url: "http://localhost:11434/v1"
+  # api_key_env: ""
+  # api_key: "ollama"
+  # primary_model: "llama3.2"
+  # fallback_models:
+  #   - "mistral"
 
 security:
   hitl_required_stages: [5, 9, 20]
