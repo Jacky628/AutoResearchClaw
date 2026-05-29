@@ -1711,11 +1711,42 @@ def _execute_paper_draft(
             "config.arc.yaml and re-run the pipeline.",
             encoding="utf-8",
         )
+        (stage_dir / "paper_meta.json").write_text(
+            json.dumps(
+                {
+                    "outcome": "blocked_simulated_data",
+                    "detected_by": (
+                        "stage-*/runs/*.json status field — every entry "
+                        "reports status: 'simulated'"
+                    ),
+                    "is_literature_first_topic": False,
+                    "note": (
+                        "Paper drafting refuses formulaic simulated metrics "
+                        "by design. Switch experiment.mode to 'sandbox' "
+                        "(or 'docker' / 'ssh_remote' / etc.) and re-run."
+                    ),
+                    "action_required": (
+                        "Set experiment.mode: 'sandbox' in config.yaml and "
+                        "re-run from --from-stage EXPERIMENT_RUN."
+                    ),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         return StageResult(
             stage=Stage.PAPER_DRAFT,
-            status=StageStatus.FAILED,
-            artifacts=("paper_draft.md",),
-            evidence_refs=(),
+            status=StageStatus.PAUSED,
+            artifacts=("paper_draft.md", "paper_meta.json"),
+            error=(
+                "Paper draft blocked: all experiment data is simulated. "
+                "Re-run with experiment.mode='sandbox'."
+            ),
+            evidence_refs=(
+                "stage-17/paper_draft.md",
+                "stage-17/paper_meta.json",
+            ),
+            decision="blocked_simulated_data",
         )
 
     # R4-2: HARD BLOCK — refuse to write paper with no real data (ML/empirical domains)
@@ -1737,11 +1768,43 @@ def _execute_paper_draft(
                 "**Action Required**: Fix experiment execution or increase time_budget_sec.",
                 encoding="utf-8",
             )
+            (stage_dir / "paper_meta.json").write_text(
+                json.dumps(
+                    {
+                        "outcome": "blocked_no_metrics",
+                        "detected_by": (
+                            "Stage 12/13 runs produced no real metrics "
+                            "(has_real_metrics is False)"
+                        ),
+                        "domain_id": _domain_id,
+                        "is_literature_first_topic": False,
+                        "note": (
+                            "Paper drafting refuses to fabricate results when "
+                            "the experiment produced no metrics."
+                        ),
+                        "action_required": (
+                            "Fix experiment execution or increase "
+                            "time_budget_sec; re-run from "
+                            "--from-stage EXPERIMENT_RUN."
+                        ),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
             return StageResult(
                 stage=Stage.PAPER_DRAFT,
-                status=StageStatus.FAILED,
-                artifacts=("paper_draft.md",),
-                evidence_refs=(),
+                status=StageStatus.PAUSED,
+                artifacts=("paper_draft.md", "paper_meta.json"),
+                error=(
+                    "Paper draft blocked: experiment produced no real metrics. "
+                    "Fix execution or increase time budget."
+                ),
+                evidence_refs=(
+                    "stage-17/paper_draft.md",
+                    "stage-17/paper_meta.json",
+                ),
+                decision="blocked_no_metrics",
             )
         else:
             logger.warning(
