@@ -757,15 +757,16 @@ Generated: {_utcnow_iso()}
     )
 
 
-def _parse_decision(text: str) -> str:
+def _parse_decision(text: str) -> str | None:
     """Extract PROCEED/PIVOT/REFINE from decision text.
 
     Looks for the first standalone keyword on its own line after a
     ``## Decision`` heading.  Falls back to a keyword scan of the first
     few lines after the heading, but only matches the keyword itself
     (not mentions inside explanatory prose like "PIVOT is not warranted").
-    Returns lowercase ``"proceed"`` / ``"pivot"`` / ``"refine"``.
-    Defaults to ``"proceed"`` if nothing matches.
+    Returns lowercase ``"proceed"`` / ``"pivot"`` / ``"refine"``, or
+    ``None`` if no keyword is found — the caller is expected to pause
+    rather than silently default to proceed.
     """
     import re as _re
 
@@ -807,7 +808,7 @@ def _parse_decision(text: str) -> str:
         return "refine"
     if last_pivot >= 0 and (last_refine < 0 or last_pivot > last_refine):
         return "pivot"
-    return "proceed"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1269,6 +1270,39 @@ Generated: {_utcnow_iso()}
 
     # --- Extract structured decision ---
     decision = _parse_decision(decision_md)
+
+    # No PROCEED/PIVOT/REFINE keyword recognised — pause the pipeline so the
+    # user can review the model's reasoning rather than silently advancing
+    # ambiguous output as "proceed".
+    if decision is None:
+        (stage_dir / "decision_structured.json").write_text(
+            json.dumps(
+                {
+                    "decision": None,
+                    "raw_text_excerpt": decision_md[:500],
+                    "decision_parse_failed": True,
+                    "note": (
+                        "No PROCEED/PIVOT/REFINE keyword found in model response. "
+                        "Pipeline paused; review decision.md and resume with "
+                        "--from-stage RESEARCH_DECISION after refining inputs."
+                    ),
+                    "generated": _utcnow_iso(),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        logger.warning(
+            "Stage 15: model decision response contained no recognized keyword — pausing pipeline"
+        )
+        return StageResult(
+            stage=Stage.RESEARCH_DECISION,
+            status=StageStatus.PAUSED,
+            artifacts=("decision.md", "decision_structured.json"),
+            error="Model decision response contained no PROCEED/PIVOT/REFINE keyword",
+            evidence_refs=("stage-15/decision.md", "stage-15/decision_structured.json"),
+            decision="undecided",
+        )
 
     # T3.1: Validate decision quality — check for minimum experiment rigor
     _quality_warnings: list[str] = []

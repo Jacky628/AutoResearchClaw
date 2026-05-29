@@ -120,6 +120,7 @@ def _execute_search_strategy(
             src = payload.get("sources", [])
             if isinstance(src, list):
                 sources = [item for item in src if isinstance(item, dict)]
+    model_plan_parsed = plan is not None
     if plan is None:
         # Build smart fallback queries by extracting key terms from topic
         # instead of using the raw (often very long) topic string.
@@ -204,6 +205,18 @@ def _execute_search_strategy(
                     qs = strat.get("queries", [])
                     if isinstance(qs, list):
                         queries_list.extend(str(q) for q in qs if q)
+        # Also accept the alternate schema where queries live under
+        # query_strategies.<sub_question>.{boolean_seeds, queries}.
+        if not queries_list:
+            qstrats = plan.get("query_strategies", {})
+            if isinstance(qstrats, dict):
+                for sub in qstrats.values():
+                    if not isinstance(sub, dict):
+                        continue
+                    for key in ("boolean_seeds", "queries"):
+                        qs = sub.get(key, [])
+                        if isinstance(qs, list):
+                            queries_list.extend(str(q) for q in qs if q)
         filters = plan.get("filters", {})
         if isinstance(filters, dict) and filters.get("min_year"):
             try:
@@ -278,8 +291,10 @@ def _execute_search_strategy(
             f"{kw_short} recent advances",
         ]
 
+    fell_back_to_defaults = False
     if not queries_list:
         queries_list = _build_default_search_queries(topic)
+        fell_back_to_defaults = True
 
     # Ensure minimum query diversity — if dedup leaves too few, add variants
     _all_kw = _extract_search_terms(topic)
@@ -308,8 +323,22 @@ def _execute_search_strategy(
             if len(unique_queries) >= 8:
                 break
     queries_list = unique_queries
+    silent_fallback = fell_back_to_defaults and model_plan_parsed
+    if silent_fallback:
+        logger.warning(
+            "Stage 3: model plan parsed but no queries harvested; "
+            "queries.json fell back to topic-derived defaults"
+        )
+    queries_meta = {
+        "queries": queries_list,
+        "year_min": year_min,
+        "model_queries_extracted": model_plan_parsed and not fell_back_to_defaults,
+        "fallback_reason": (
+            "model_plan_used_unknown_schema" if silent_fallback else None
+        ),
+    }
     (stage_dir / "queries.json").write_text(
-        json.dumps({"queries": queries_list, "year_min": year_min}, indent=2),
+        json.dumps(queries_meta, indent=2),
         encoding="utf-8",
     )
     return StageResult(
@@ -669,6 +698,8 @@ def _execute_literature_screen(
     )
 
     shortlist: list[dict[str, Any]] = []
+    model_rejected_all = False
+    parse_failed = False
     if llm is not None:
         _pm = prompts or PromptManager()
         _overlay = _get_evolution_overlay(run_dir, "literature_screen")
@@ -690,10 +721,52 @@ def _execute_literature_screen(
             max_tokens=sp.max_tokens,
         )
         payload = _safe_json_loads(resp.content, {})
-        if isinstance(payload, dict) and isinstance(payload.get("shortlist"), list):
-            shortlist = [row for row in payload["shortlist"] if isinstance(row, dict)]
+        raw = payload.get("shortlist") if isinstance(payload, dict) else None
+        if isinstance(raw, list):
+            if len(raw) == 0:
+                # Distinguish a valid strict-screen empty result from a
+                # malformed list whose entries are not dicts.
+                model_rejected_all = True
+            else:
+                shortlist = [row for row in raw if isinstance(row, dict)]
+                if not shortlist:
+                    parse_failed = True
+        else:
+            parse_failed = True
     # T2.2: Ensure minimum shortlist size of 15 for adequate related work
     _MIN_SHORTLIST = 15
+    if model_rejected_all:
+        # Strict screen returned an empty shortlist — do not backfill with
+        # rejected papers. Pause the pipeline so the user can decide whether
+        # to refine the search or accept the rejection.
+        (stage_dir / "screen_meta.json").write_text(
+            json.dumps(
+                {
+                    "outcome": "model_rejected_all",
+                    "candidates_screened": len(filtered_rows),
+                    "shortlist_size": 0,
+                    "note": (
+                        "Strict screen returned empty shortlist. Pipeline paused; "
+                        "consider rerunning SEARCH_STRATEGY with refined queries "
+                        "before resuming."
+                    ),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        logger.warning(
+            "Stage 5: model rejected all %d candidates — pausing pipeline",
+            len(filtered_rows),
+        )
+        return StageResult(
+            stage=Stage.LITERATURE_SCREEN,
+            status=StageStatus.PAUSED,
+            artifacts=("screen_meta.json",),
+            error="Model returned empty shortlist after strict screening",
+            evidence_refs=("stage-05/screen_meta.json",),
+            decision="rejected_all",
+        )
     if not shortlist:
         rows = (
             filtered_rows[:_MIN_SHORTLIST]
@@ -703,7 +776,11 @@ def _execute_literature_screen(
         for idx, item in enumerate(rows):
             item["relevance_score"] = round(0.75 - idx * 0.02, 3)
             item["quality_score"] = round(0.72 - idx * 0.015, 3)
-            item["keep_reason"] = "Template screened entry"
+            item["keep_reason"] = (
+                "Template fallback (parse failure)"
+                if parse_failed
+                else "Template screened entry"
+            )
             shortlist.append(item)
     elif len(shortlist) < _MIN_SHORTLIST:
         # T2.2: LLM returned too few — supplement from filtered candidates
