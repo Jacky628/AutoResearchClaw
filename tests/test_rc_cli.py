@@ -320,6 +320,26 @@ def test_cmd_init_force_overwrites(
     assert (tmp_path / "config.arc.yaml").read_text(encoding="utf-8") != "old\n"
 
 
+def test_cmd_init_acp_disables_opencode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """When provider=acp is selected, OpenCode Beast Mode is disabled in the generated config."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})()
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "5")
+    monkeypatch.setattr(rc_cli, "_prompt_opencode_install", lambda: None)
+
+    args = argparse.Namespace(force=False)
+    code = rc_cli.cmd_init(args)
+    assert code == 0
+
+    config = (tmp_path / "config.arc.yaml").read_text(encoding="utf-8")
+    assert "enabled: false               # Master switch (disabled for ACP)" in config
+    assert "enabled: true                # Master switch (default: true)" not in config
+
+
 def test_cmd_run_missing_config_shows_init_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

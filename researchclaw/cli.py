@@ -854,6 +854,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             'base_url: "https://api.openai.com/v1"', 'base_url: ""'
         )
         content = content.replace('api_key_env: "OPENAI_API_KEY"', 'api_key_env: ""')
+        # Beast Mode is incompatible with ACP (opencode_bridge prepends "openai/")
+        content = content.replace(
+            '    enabled: true                # Master switch (default: true)',
+            '    enabled: false               # Master switch (disabled for ACP)',
+        )
     elif provider == "ollama":
         # Ollama runs locally — set base_url, clear api_key_env, set dummy key
         base_url = _PROVIDER_URLS["ollama"]
