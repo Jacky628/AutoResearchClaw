@@ -561,24 +561,39 @@ def _execute_quality_gate(
     _fabrication_info["fabrication_suspected"] = (
         _exp_failed and not _fabrication_info["has_real_data"]
     )
-    # Phase 1: Enhanced fabrication detection via VerifiedRegistry
-    # BUG-108: Also pass refinement_log so NaN best_metric is properly handled
-    _rl20_candidates = sorted(run_dir.glob("stage-13*/refinement_log.json"), reverse=True)
-    _rl20_path = _rl20_candidates[0] if _rl20_candidates else None
-    _rl20: dict | None = None
-    if _rl20_path and _rl20_path.is_file():
-        try:
-            _rl20 = json.loads(_rl20_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
+    # --- Hard guard: block if VerifiedRegistry has zero real experiment values ---
+    # Even if the LLM gives a passing score, a paper with no verified
+    # experiment data must not proceed to export. This prevents the exact
+    # failure in issue #165 where a 3.46s "experiment" produced a fabricated
+    # paper that passed the quality gate.
+    _vr_zero_values = False
     try:
         from researchclaw.pipeline.verified_registry import VerifiedRegistry as _VR20
         _vr20 = _VR20.from_run_dir(run_dir, metric_direction=config.experiment.metric_direction, best_only=True) if isinstance(_exp_summary, dict) else None
         if _vr20:
             _fabrication_info["verified_values_count"] = len(_vr20.values)
             _fabrication_info["verified_conditions"] = sorted(_vr20.condition_names)
+            if len(_vr20.values) == 0 and _exp_failed:
+                _vr_zero_values = True
     except Exception:
         pass
+    if _vr_zero_values:
+        logger.error(
+            "Stage 20 BLOCKED: VerifiedRegistry has zero real experiment values "
+            "and experiment summary reports failure. The paper's numerical results "
+            "cannot be grounded in real data. Refusing to proceed."
+        )
+        return StageResult(
+            stage=Stage.QUALITY_GATE,
+            status=StageStatus.FAILED,
+            artifacts=("quality_report.json", "fabrication_flags.json"),
+            evidence_refs=("stage-20/quality_report.json",),
+            error=(
+                "Quality gate BLOCKED: VerifiedRegistry has zero real experiment "
+                "values and experiment failed. Paper contains no grounded data. "
+                "Pipeline must not proceed to export."
+            ),
+        )
     (stage_dir / "fabrication_flags.json").write_text(
         json.dumps(_fabrication_info, indent=2), encoding="utf-8"
     )
