@@ -337,3 +337,38 @@ class TestDetectionAccuracy:
             f"Full detection accuracy: {accuracy:.1%} ({correct}/{total}). "
             f"Expected > 90%."
         )
+
+
+# ---------------------------------------------------------------------------
+# Regression: drug repurposing must not bleed into chemistry_molprop
+# ---------------------------------------------------------------------------
+
+
+class TestDrugKeywordRegression:
+    """Regression tests for the bare 'drug' keyword removal from chemistry_molprop.
+
+    Previously the chemistry_molprop rule contained a bare 'drug' keyword that
+    caused network-medicine topics (drug repurposing, drug-target interaction)
+    to be routed into chemistry_molprop, injecting RDKit/SMILES/QM9 prompt
+    guidance that overrode the user's domain-specific overrides.
+    """
+
+    def setup_method(self):
+        _profile_cache.clear()
+
+    def test_drug_repurposing_falls_back_to_generic(self):
+        """Network-medicine drug-repurposing topics must NOT misclassify as chemistry."""
+        assert detect_domain_id("COVID-19 drug repurposing using gene-disease associations") == "generic"
+        assert detect_domain_id("Drug repurposing with network medicine") == "generic"
+        assert detect_domain_id("drug-target interaction network analysis") == "generic"
+        assert detect_domain_id("drug-disease association using network propagation") == "generic"
+
+    def test_cheminformatics_topics_still_detected(self):
+        """Real cheminformatics topics must still route to chemistry_molprop
+        via the more specific keywords that replaced the bare 'drug'."""
+        # New specific keywords added by this patch
+        assert _keyword_detect("QSAR model with Morgan fingerprints") == "chemistry_molprop"
+        assert _keyword_detect("ECFP fingerprint for binding affinity") == "chemistry_molprop"
+        # Pre-existing keywords (rdkit, binding affinity, admet) still trigger
+        assert _keyword_detect("Drug binding affinity with RDKit fingerprints") == "chemistry_molprop"
+        assert _keyword_detect("ADMET descriptor prediction") == "chemistry_molprop"
