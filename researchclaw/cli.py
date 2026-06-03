@@ -793,7 +793,7 @@ _PROVIDER_MODELS = {
         ["google/gemini-pro-1.5", "meta-llama/llama-3.1-70b-instruct"],
     ),
     "deepseek": ("deepseek-chat", ["deepseek-reasoner"]),
-    "minimax": ("MiniMax-M2.5", ["MiniMax-M2.5-highspeed"]),
+    "minimax": ("MiniMax-M3", ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]),
     "ollama": ("llama3.2", ["mistral", "qwen2.5:7b"]),
 }
 

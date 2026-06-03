@@ -47,9 +47,10 @@ llm:
   # --- MiniMax provider example ---
   # provider: "minimax"
   # api_key_env: "MINIMAX_API_KEY"
-  # primary_model: "MiniMax-M2.5"
+  # primary_model: "MiniMax-M3"
   # fallback_models:
-  #   - "MiniMax-M2.5-highspeed"
+  #   - "MiniMax-M2.7"
+  #   - "MiniMax-M2.7-highspeed"
   # --- Ollama (local) example ---
   # provider: "ollama"
   # base_url: "http://localhost:11434/v1"
