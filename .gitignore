@@ -29,6 +29,7 @@ writing/
 # Root-level config (local overrides, not committed)
 /config.yaml
 /config.arc.yaml
+/config.arc-*.yaml
 config_*.yaml
 config_run*.yaml
 config_agent_*.yaml
