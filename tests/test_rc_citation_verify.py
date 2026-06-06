@@ -545,6 +545,45 @@ class TestAnnotatePaperHallucinations:
         result = annotate_paper_hallucinations(paper, report)
         assert result == paper
 
+    def test_whitespace_cleanup_before_punctuation(self) -> None:
+        """Stripping a cite before '.' / ',' must not leave a stray space.
+
+        Incident: Stage 23 left ' .' and ' ,' artifacts in paper_final.md
+        after removing hallucinated citations, mirroring runner.py's
+        whitespace cleanup for paper.tex.
+        """
+        paper = (
+            "Work on this task [fakepaper2025hallucinated] has a long history . "
+            "We cite [fakepaper2025hallucinated] , and also [realpaper2024]."
+        )
+        report = VerificationReport(
+            results=[
+                CitationResult(
+                    cite_key="fakepaper2025hallucinated",
+                    title="",
+                    status=VerifyStatus.HALLUCINATED,
+                    confidence=0.9,
+                    method="title_search",
+                ),
+                CitationResult(
+                    cite_key="realpaper2024",
+                    title="",
+                    status=VerifyStatus.VERIFIED,
+                    confidence=1.0,
+                    method="arxiv_id",
+                ),
+            ],
+        )
+        result = annotate_paper_hallucinations(paper, report)
+        assert "fakepaper2025hallucinated" not in result
+        # No " ." or " ," artifacts after stripping
+        assert " ." not in result
+        assert " ," not in result
+        # No double spaces
+        assert "  " not in result
+        # Kept citation survives
+        assert "[realpaper2024]" in result
+
 
 class TestCitationResultSerialization:
     def test_to_dict_basic(self) -> None:

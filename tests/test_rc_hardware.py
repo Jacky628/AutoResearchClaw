@@ -62,6 +62,41 @@ class TestDetectNvidia:
         assert profile.tier == "high"
         assert profile.warning == ""
 
+    def test_multi_gpu_nvidia(self):
+        # nvidia-smi prints one line per GPU; 2x RTX 3090 must be aggregated,
+        # not silently truncated to the first card.
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = (
+            "NVIDIA GeForce RTX 3090, 24576\n"
+            "NVIDIA GeForce RTX 3090, 24576\n"
+        )
+
+        with patch("researchclaw.hardware.subprocess.run", return_value=mock_result):
+            profile = _detect_nvidia()
+
+        assert profile is not None
+        assert profile.gpu_count == 2
+        assert profile.vram_mb == 24576          # per-card VRAM preserved
+        assert profile.total_vram_mb == 49152    # aggregate across both cards
+        assert "2" in profile.gpu_name           # count surfaced in name
+        assert "RTX 3090" in profile.gpu_name
+        assert profile.tier == "high"
+
+    def test_single_gpu_no_count_prefix(self):
+        # A single GPU must keep its bare name (no "1x" prefix) for back-compat.
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "NVIDIA GeForce RTX 4090, 24564\n"
+
+        with patch("researchclaw.hardware.subprocess.run", return_value=mock_result):
+            profile = _detect_nvidia()
+
+        assert profile is not None
+        assert profile.gpu_count == 1
+        assert profile.gpu_name == "NVIDIA GeForce RTX 4090"
+        assert profile.total_vram_mb == 24564
+
     def test_low_vram_nvidia(self):
         mock_result = MagicMock()
         mock_result.returncode = 0

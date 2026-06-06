@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
@@ -28,6 +29,18 @@ from researchclaw.pipeline.stages import Stage, StageStatus
 from researchclaw.prompts import PromptManager
 
 logger = logging.getLogger(__name__)
+
+# Best-of-N exploration stances for the Stage 9 design tournament. Each candidate
+# plan is generated with one stance appended, giving breadth even with a single
+# generator model. Domain-agnostic.
+_DESIGN_ANGLES = (
+    "Be ambitious: prioritize high-ceiling, novel methods that could yield a "
+    "strong result, accepting higher risk.",
+    "Be robust: prioritize strong, well-known baselines and a clean, defensible "
+    "comparison over novelty.",
+    "Be compute-efficient: design the most decisive experiment that fits a tight "
+    "compute budget — minimal but conclusive.",
+)
 
 
 def _normalize_plan_field(value: Any) -> list:
@@ -71,6 +84,28 @@ def _plan_field_names(items: list) -> list[str]:
     return result
 
 
+_PLAN_KEYS = frozenset({
+    "objectives", "datasets", "baselines", "proposed_methods",
+    "ablations", "metrics", "risks", "compute_budget",
+})
+
+
+def _unwrap_plan_dict(parsed: Any) -> Any:
+    """Unwrap a plan nested under a single parent key.
+
+    Models sometimes emit ``{experiment_plan: {objectives: ..., ...}}`` instead
+    of the keys at top level. If the parsed dict has none of the expected plan
+    keys at top level but a single dict child that does, return the child.
+    """
+    if not isinstance(parsed, dict) or _PLAN_KEYS & parsed.keys():
+        return parsed
+    if len(parsed) == 1:
+        only = next(iter(parsed.values()))
+        if isinstance(only, dict) and (_PLAN_KEYS & only.keys()):
+            return only
+    return parsed
+
+
 def _execute_experiment_design(
     stage_dir: Path,
     run_dir: Path,
@@ -95,6 +130,7 @@ def _execute_experiment_design(
         _domain_profile = _detect_domain_adv(
             topic=config.research.topic,
             hypotheses=hypotheses,
+            configured_domains=config.research.domains,
         )
         logger.info(
             "Domain detected: %s (%s)",
@@ -188,12 +224,28 @@ def _execute_experiment_design(
                     _dg_block += _fw_docs
         except Exception:  # noqa: BLE001
             pass
-        # Improvement A: Compute hardware profile + per-condition budget
-        _hw_profile_str = (
-            "- GPU: NVIDIA RTX 6000 Ada (49140 MB VRAM)\n"
-            "- GPU count: 1\n"
-            "- CPU: shared server"
-        )
+        # Improvement A: Compute hardware profile + per-condition budget.
+        # Use the real detected profile (stage-01/hardware_profile.json) instead
+        # of a hardcoded placeholder, so the design respects actual GPU count/VRAM.
+        _hw = _load_hardware_profile(run_dir)
+        if _hw and _hw.get("has_gpu"):
+            _hw_name = _hw.get("gpu_name", "GPU")
+            _hw_vram = _hw.get("vram_mb")
+            _hw_count = int(_hw.get("gpu_count", 1) or 1)
+            _hw_total = _hw.get("total_vram_mb")
+            _vram_str = f"{_hw_vram} MB VRAM per card" if _hw_vram else "VRAM unknown"
+            _total_str = f", {_hw_total} MB total" if _hw_total and _hw_count > 1 else ""
+            _hw_profile_str = (
+                f"- GPU: {_hw_name} ({_vram_str}{_total_str})\n"
+                f"- GPU count: {_hw_count}\n"
+                "- CPU: shared server"
+            )
+        else:
+            _hw_profile_str = (
+                "- GPU: none detected (CPU only)\n"
+                "- GPU count: 0\n"
+                "- CPU: shared server"
+            )
         _per_condition_sec = int(config.experiment.time_budget_sec * 0.7 / 6)
         _tier1 = "CIFAR-10, CIFAR-100, MNIST, FashionMNIST, STL-10, SVHN"
 
@@ -212,13 +264,47 @@ def _execute_experiment_design(
             per_condition_budget_sec=_per_condition_sec,
             available_tier1_datasets=_tier1,
         )
-        resp = _chat_with_prompt(
-            llm,
-            sp.system,
-            sp.user,
-            json_mode=sp.json_mode,
-            max_tokens=sp.max_tokens,
-        )
+        if config.llm.tournament_enabled and config.llm.tournament_candidates >= 2:
+            # --- Best-of-N tournament: generate N candidate plans from diverse
+            # stances, then an independent judge picks the winner. Downstream YAML
+            # parsing / normalization / caps / BenchmarkAgent run on the winner.
+            from researchclaw.llm import build_panel_llms, build_reviewer_llm
+            from researchclaw.pipeline.tournament import (
+                effective_candidates,
+                run_tournament,
+            )
+
+            _gens = build_panel_llms(config) or [llm]
+            _judge = build_reviewer_llm(config) or llm
+            _n = effective_candidates(config.llm.tournament_candidates)
+            _cps = [
+                (
+                    sp.system,
+                    sp.user
+                    + "\n\n## Exploration stance\n"
+                    + _DESIGN_ANGLES[i % len(_DESIGN_ANGLES)],
+                )
+                for i in range(_n)
+            ]
+            _winner, _ = run_tournament(
+                _gens,
+                _judge,
+                _cps,
+                rank_prompt="tournament_rank",
+                out_dir=stage_dir / "tournament",
+                prompts=_pm,
+                author_model=getattr(llm.config, "primary_model", ""),
+                label="plan",
+            )
+            resp = SimpleNamespace(content=_winner)
+        else:
+            resp = _chat_with_prompt(
+                llm,
+                sp.system,
+                sp.user,
+                json_mode=sp.json_mode,
+                max_tokens=sp.max_tokens,
+            )
         raw_yaml = _extract_yaml_block(resp.content)
         try:
             parsed = yaml.safe_load(raw_yaml)
@@ -257,7 +343,7 @@ def _execute_experiment_design(
                 except yaml.YAMLError:
                     pass
         if isinstance(parsed, dict):
-            plan = parsed
+            plan = _unwrap_plan_dict(parsed)
         else:
             logger.warning(
                 "Stage 09: LLM response could not be parsed as YAML "
@@ -270,23 +356,35 @@ def _execute_experiment_design(
             # BUG-12: Retry with a stricter, shorter prompt
             if llm is not None:
                 logger.info("Stage 09: Retrying with strict YAML-only prompt...")
+                # Keep the retry GROUNDED: a context-free retry produces generic
+                # plans that ignore the hardware and hypotheses (e.g. 128xA100,
+                # 34B models, GPT-4 baselines). Re-inject the real constraints.
                 _retry_prompt = (
                     "Output ONLY valid YAML. No prose, no markdown fences, no explanation.\n"
                     f"Topic: {config.research.topic}\n"
                     "Required keys: baselines, proposed_methods, ablations, "
                     "datasets, metrics, objectives, risks, compute_budget.\n"
-                    "Each key maps to a list of strings."
+                    "Each key maps to a SHORT list of one-line strings (<=7 each).\n\n"
+                    "HARD CONSTRAINTS:\n"
+                    f"- Hardware (use ONLY this): {_hw_profile_str}\n"
+                    "- compute_budget MUST be in GPU-hours on the hardware above; "
+                    "NO A100/H100 clusters or cloud dollar budgets.\n"
+                    "- Open-weight models ONLY (no GPT-4 / proprietary APIs).\n"
+                    "- Metrics must be automatically computable in code (no human studies).\n"
+                    "- baselines/proposed_methods/ablations MUST derive from the "
+                    "hypotheses below.\n\n"
+                    f"Hypotheses:\n{hypotheses[:4000]}"
                 )
                 _retry_resp = _chat_with_prompt(
                     llm,
                     "You output ONLY valid YAML. Nothing else.",
                     _retry_prompt,
-                    max_tokens=4096,
+                    max_tokens=8000,
                 )
                 try:
                     _retry_parsed = yaml.safe_load(_retry_resp.content)
                     if isinstance(_retry_parsed, dict):
-                        plan = _retry_parsed
+                        plan = _unwrap_plan_dict(_retry_parsed)
                         logger.info("Stage 09: Strict YAML retry succeeded.")
                 except yaml.YAMLError:
                     pass
@@ -354,6 +452,7 @@ def _execute_experiment_design(
             _ba_domain_profile = _detect_domain_adv(
                 topic=config.research.topic,
                 hypotheses=hypotheses,
+                configured_domains=config.research.domains,
             )
         except Exception:  # noqa: BLE001
             logger.debug("BenchmarkAgent domain detection unavailable", exc_info=True)
@@ -400,7 +499,8 @@ def _execute_experiment_design(
                 llm,
                 config=_ba_cfg,
                 gpu_memory_mb=(
-                    _hw.get("gpu_memory_mb", 49000) if _hw else 49000
+                    _hw.get("vram_mb") or _hw.get("gpu_memory_mb") or 49000
+                    if _hw else 49000
                 ),
                 time_budget_sec=config.experiment.time_budget_sec,
                 network_policy=(

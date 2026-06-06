@@ -34,6 +34,8 @@ from researchclaw.pipeline._helpers import (
     _utcnow_iso,
     reconcile_figure_refs,
 )
+from researchclaw.llm import build_panel_llms
+from researchclaw.pipeline.debate import run_debate
 from researchclaw.pipeline.stages import Stage, StageStatus
 from researchclaw.prompts import PromptManager
 
@@ -133,6 +135,54 @@ def _collect_experiment_evidence(run_dir: Path) -> str:
 
 # ---------------------------------------------------------------------------
 # Stage 18: Peer Review
+# P0-3: explicit independence framing prepended to peer-review / quality-gate
+# system prompts. Applied even when the reviewer reuses the generator model, to
+# reduce self-preference; strongest when an independent reviewer model is set.
+_REVIEW_DEBATE_ROLES: dict[str, dict[str, str]] = {
+    "methodology_reviewer": {
+        "system": "You are a peer reviewer focused on METHODOLOGY and experimental design rigor.",
+        "user": ("Review this paper draft for methodological soundness, baselines, ablations, and validity threats.\n\nTopic: {topic}\n\nEvidence:\n{experiment_evidence}\n\nDraft:\n{draft}"),
+    },
+    "domain_reviewer": {
+        "system": "You are a peer reviewer who is a DOMAIN EXPERT judging novelty and significance.",
+        "user": ("Review this paper draft for novelty, related-work positioning, and contribution significance.\n\nTopic: {topic}\n\nDraft:\n{draft}"),
+    },
+    "rigor_reviewer": {
+        "system": "You are a peer reviewer focused on STATISTICS, reproducibility, and claim-evidence consistency.",
+        "user": ("Review this paper draft for statistical rigor, reproducibility, and whether every claim is supported by the evidence. Flag unsupported numbers.\n\nEvidence:\n{experiment_evidence}\n\nDraft:\n{draft}"),
+    },
+}
+
+
+_INDEPENDENT_REVIEWER_PREFIX = (
+    "You are an INDEPENDENT reviewer and judge - a different system from the "
+    "model that authored this paper. Be adversarial and skeptical. Do NOT assume "
+    "the authors' claims, numbers, or conclusions are correct; actively look for "
+    "unsupported claims, overstated results, and methodological flaws.\n\n"
+)
+
+
+def _build_reviewer_or_generator(config, generator_llm):
+    """Return (review_client, author_model, judge_model) for review stages.
+
+    Falls back to the generator client when no independent reviewer is
+    configured, preserving legacy behaviour. author_model / judge_model are
+    recorded into artifacts for auditability.
+    """
+    author_model = ""
+    if generator_llm is not None:
+        author_model = getattr(getattr(generator_llm, "config", None), "primary_model", "") or ""
+    try:
+        from researchclaw.llm import build_reviewer_llm
+        reviewer = build_reviewer_llm(config)
+    except Exception:  # noqa: BLE001
+        reviewer = None
+    if reviewer is not None:
+        judge_model = getattr(getattr(reviewer, "config", None), "primary_model", "") or ""
+        return reviewer, author_model, judge_model
+    return generator_llm, author_model, author_model
+
+
 # ---------------------------------------------------------------------------
 
 def _execute_peer_review(
@@ -163,7 +213,33 @@ def _execute_peer_review(
         except Exception:  # noqa: BLE001
             pass
 
-    if llm is not None:
+    # P0-3: route peer review through an independent reviewer model when
+    # configured; otherwise fall back to the generator (legacy behaviour).
+    _review_llm, _author_model, _judge_model = _build_reviewer_or_generator(config, llm)
+    _panel = build_panel_llms(config)
+    if _panel and _review_llm is not None:
+        # --- Multi-model peer-review debate: distinct models each play an
+        # independent reviewer role (methodology / domain / rigor), rebut each
+        # other, then an independent judge (reviewer_model) synthesizes the
+        # final review report. ---
+        _pm = prompts or PromptManager()
+        _variables = {
+            "topic": config.research.topic,
+            "draft": draft + _quality_suffix,
+            "experiment_evidence": experiment_evidence,
+        }
+        reviews, _ = run_debate(
+            _panel,
+            _review_llm,
+            _REVIEW_DEBATE_ROLES,
+            _variables,
+            rounds=config.llm.debate_rounds,
+            synth_prompt="review_synthesize",
+            out_dir=stage_dir / "debate",
+            prompts=_pm,
+            author_model=_author_model,
+        )
+    elif _review_llm is not None:
         _pm = prompts or PromptManager()
         _overlay = _get_evolution_overlay(run_dir, "peer_review")
         sp = _pm.for_stage(
@@ -177,10 +253,10 @@ def _execute_peer_review(
         # Reviewer persona and rubric are carried natively by the active
         # prompt bank (ML bank -> NeurIPS/ICML referees, HEP bank -> HEP
         # theorist/phenomenologist/experimentalist). No adapter overlay.
-        _review_system = sp.system
+        _review_system = _INDEPENDENT_REVIEWER_PREFIX + sp.system
         _review_user = sp.user + _quality_suffix
         resp = _chat_with_prompt(
-            llm,
+            _review_llm,
             _review_system,
             _review_user,
             json_mode=sp.json_mode,
@@ -200,7 +276,25 @@ def _execute_peer_review(
 - Weaknesses: Discussion underdeveloped.
 - Actionable revisions: Expand limitations and broader impact.
 """
-    (stage_dir / "reviews.md").write_text(reviews, encoding="utf-8")
+    # P0-3: record review provenance (author vs judge model).
+    _independent = bool(_judge_model and _judge_model != _author_model)
+    _prov_header = (
+        f"<!-- review_provenance: author_model={_author_model or 'unknown'} "
+        f"judge_model={_judge_model or _author_model or 'unknown'} "
+        f"independent={'yes' if _independent else 'no'} -->\n"
+    )
+    (stage_dir / "reviews.md").write_text(_prov_header + reviews, encoding="utf-8")
+    (stage_dir / "review_provenance.json").write_text(
+        json.dumps(
+            {
+                "author_model": _author_model,
+                "judge_model": _judge_model or _author_model,
+                "independent_reviewer": _independent,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return StageResult(
         stage=Stage.PEER_REVIEW,
         status=StageStatus.DONE,
@@ -388,6 +482,9 @@ def _execute_quality_gate(
 ) -> StageResult:
     revised = _read_prior_artifact(run_dir, "paper_revised.md") or ""
     report: dict[str, Any] | None = None
+    # P0-3: judge with an independent model when configured (author writes,
+    # independent model judges). Falls back to the generator otherwise.
+    _judge_llm, _author_model, _judge_model = _build_reviewer_or_generator(config, llm)
 
     # BUG-25 + BUG-180: Load the RICHEST experiment summary for cross-checking.
     # _read_prior_artifact returns the first match in reverse-sorted order,
@@ -482,8 +579,8 @@ def _execute_quality_gate(
             revised=paper_for_eval + _exp_context,
         )
         resp = _chat_with_prompt(
-            llm,
-            sp.system,
+            _judge_llm or llm,
+            _INDEPENDENT_REVIEWER_PREFIX + sp.system,
             sp.user,
             json_mode=sp.json_mode,
             max_tokens=sp.max_tokens,
@@ -507,6 +604,11 @@ def _execute_quality_gate(
     if report is None:
         report = _default_quality_report(config.research.quality_threshold)
     report.setdefault("generated", _utcnow_iso())
+    # P0-3: record judge provenance so reviewers can see if the gate was
+    # independent of the authoring model.
+    report["author_model"] = _author_model
+    report["judge_model"] = _judge_model or _author_model
+    report["independent_judge"] = bool(_judge_model and _judge_model != _author_model)
     (stage_dir / "quality_report.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"
     )
@@ -1436,7 +1538,10 @@ def _execute_export_publish(
     try:
         from researchclaw.domains.detector import detect_domain as _detect_domain_adv
         from researchclaw.domains.prompt_adapter import get_adapter as _get_prompt_adapter
-        _ex_domain = _detect_domain_adv(topic=config.research.topic)
+        _ex_domain = _detect_domain_adv(
+            topic=config.research.topic,
+            configured_domains=config.research.domains,
+        )
         _ex_adapter = _get_prompt_adapter(_ex_domain)
         _ex_blocks = _ex_adapter.get_export_publish_blocks({"topic": config.research.topic})
         _export_preferred_template = _ex_blocks.preferred_template or ""
@@ -2638,9 +2743,31 @@ def _remove_citations_from_text(text: str, keys_to_remove: set[str]) -> str:
 
     text = re.sub(r"\\cite\{([^}]+)\}", _filter_cite, text)
 
-    # Markdown: [key]
-    for key in keys_to_remove:
-        text = re.sub(rf"\[{re.escape(key)}\]", "", text)
+    # Markdown: [key] — also handle multi-key brackets so we don't leave
+    # orphan commas or semicolons behind.
+    _cite_key_pat = r"[a-zA-Z]+\d{4}[a-zA-Z0-9_-]*"
+
+    def _filter_md_bracket(m: re.Match[str]) -> str:
+        parts = [p.strip() for p in re.split(r"[,;]\s*", m.group(1))]
+        if not all(re.fullmatch(_cite_key_pat, p) for p in parts if p):
+            return m.group(0)
+        kept = [p for p in parts if p and p not in keys_to_remove]
+        if not kept:
+            return ""
+        return "[" + ", ".join(kept) + "]"
+
+    text = re.sub(
+        rf"\[({_cite_key_pat}(?:\s*[,;]\s*{_cite_key_pat})*)\]",
+        _filter_md_bracket,
+        text,
+    )
+
+    # Clean up whitespace artifacts left by removed cites — matches the
+    # cleanup runner.py does for paper.tex so paper_final.md stays clean.
+    text = re.sub(r" {2,}", " ", text)
+    text = re.sub(r" ([.,;:)])", r"\1", text)
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\[\s*\]", "", text)
     return text
 
 

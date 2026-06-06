@@ -1108,6 +1108,11 @@ def check_filename_collisions(files: dict[str, str]) -> list[str]:
     _SHADOW_RISK: set[str] = {
         # pip packages frequently installed as transitive deps
         "config", "test", "tests", "types", "typing_extensions",
+        # ML/DL packages likely present in experiment envs
+        "numpy", "pandas", "scipy", "sklearn", "torch", "tensorflow",
+        "transformers", "tokenizers", "datasets", "peft", "accelerate",
+        "bitsandbytes", "trl", "evaluate", "safetensors", "huggingface_hub",
+        "wandb", "tensorboard", "matplotlib", "seaborn", "plotly",
         # stdlib modules the LLM might accidentally shadow
         "io", "logging", "json", "time", "random", "copy", "math",
         "os", "sys", "collections", "functools", "abc", "re",

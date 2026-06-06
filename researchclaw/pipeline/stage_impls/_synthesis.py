@@ -21,7 +21,7 @@ from researchclaw.pipeline._helpers import (
     _utcnow_iso,
 )
 from researchclaw.pipeline.stages import Stage, StageStatus
-from researchclaw.prompts import PromptManager
+from researchclaw.prompts import PromptManager, _render
 
 logger = logging.getLogger(__name__)
 
@@ -107,22 +107,56 @@ def _execute_hypothesis_gen(
         #  HEP bank -> theorist/phenomenologist/experimentalist).
         _active_roles = _pm.debate_roles_hypothesis()
 
-        # --- Multi-perspective debate ---
-        perspectives_dir = stage_dir / "perspectives"
         variables = {"topic": config.research.topic, "synthesis": synthesis}
-        perspectives = _multi_perspective_generate(
-            llm, _active_roles, variables, perspectives_dir
-        )
-        # BUG-S2: If all debate perspectives failed, fall back to defaults
-        # instead of sending empty context to the LLM (pure hallucination).
-        if not perspectives:
-            logger.warning("All debate perspectives failed; using default hypotheses")
-            hypotheses_md = _default_hypotheses(config.research.topic)
-        else:
-            # --- Synthesize into final hypotheses ---
-            hypotheses_md = _synthesize_perspectives(
-                llm, perspectives, "hypothesis_synthesize", _pm
+        if config.llm.tournament_enabled and config.llm.tournament_candidates >= 2:
+            # --- Best-of-N tournament: generate N candidate hypothesis sets
+            # from diverse stances, then an independent judge picks the winner.
+            from researchclaw.llm import build_panel_llms, build_reviewer_llm
+            from researchclaw.pipeline.tournament import (
+                effective_candidates,
+                run_tournament,
             )
+
+            _gens = build_panel_llms(config) or [llm]
+            _judge = build_reviewer_llm(config) or llm
+            _roles = list(_active_roles.values()) or [
+                {"system": "You are a research scientist.",
+                 "user": "Propose 2-4 falsifiable hypotheses for:\n{topic}\n\n{synthesis}"}
+            ]
+            _n = effective_candidates(config.llm.tournament_candidates)
+            _cps = [
+                (
+                    _render(_roles[i % len(_roles)]["system"], variables),
+                    _render(_roles[i % len(_roles)]["user"], variables),
+                )
+                for i in range(_n)
+            ]
+            hypotheses_md, _ = run_tournament(
+                _gens,
+                _judge,
+                _cps,
+                rank_prompt="tournament_rank",
+                out_dir=stage_dir / "tournament",
+                prompts=_pm,
+                author_model=getattr(llm.config, "primary_model", ""),
+                label="hypset",
+            )
+        else:
+            # --- Multi-perspective debate ---
+            perspectives_dir = stage_dir / "perspectives"
+            perspectives = _multi_perspective_generate(
+                llm, _active_roles, variables, perspectives_dir
+            )
+            # BUG-S2: If all debate perspectives failed, fall back to defaults
+            # instead of sending empty context to the LLM (pure hallucination).
+            if not perspectives:
+                logger.warning("All debate perspectives failed; using default hypotheses")
+                hypotheses_md = _default_hypotheses(config.research.topic)
+            else:
+                # --- Synthesize into final hypotheses ---
+                hypotheses_md = _synthesize_perspectives(
+                    llm, perspectives, "hypothesis_synthesize", _pm
+                )
     else:
         hypotheses_md = _default_hypotheses(config.research.topic)
     # --- HITL: Read human guidance if available ---

@@ -121,6 +121,15 @@ def _execute_search_strategy(
             if isinstance(src, list):
                 sources = [item for item in src if isinstance(item, dict)]
     if plan is None:
+        # The LLM plan was unusable (e.g. truncated/unparseable json_mode output).
+        # Surface it instead of silently degrading to heuristic keyword queries.
+        if llm is not None:
+            logger.warning(
+                "Stage 3: LLM search plan unusable (empty/unparseable JSON — "
+                "often a truncated json_mode response); falling back to "
+                "heuristic keyword queries from the topic. Search quality may "
+                "be degraded."
+            )
         # Build smart fallback queries by extracting key terms from topic
         # instead of using the raw (often very long) topic string.
         _fallback_queries = _build_fallback_queries(topic)
@@ -603,6 +612,113 @@ _MAX_ABSTRACT_LEN = 800  # Truncate long abstracts to reduce token usage
 _MAX_CANDIDATES_CHARS = 30_000  # Cap total candidates text sent to LLM
 
 
+def _screen_row_key(row: dict[str, Any]) -> str:
+    """Stable identity for a candidate across selection and re-join."""
+    return str(
+        row.get("paper_id") or row.get("cite_key") or row.get("title") or ""
+    ).strip()
+
+
+def _select_screen_candidates(
+    rows: list[dict[str, Any]],
+    kw_quota: int = 80,
+    cite_quota: int = 40,
+) -> list[dict[str, Any]]:
+    """Dual-criteria recall for LLM screening.
+
+    Combines the top *kw_quota* candidates by keyword overlap (topical match)
+    with the top *cite_quota* by citation count (foundational/seminal recall),
+    so highly-cited baseline papers with low keyword overlap (e.g. DeepCAD)
+    still reach the screener instead of being starved by recent keyword-dense
+    papers.
+    """
+    by_kw = sorted(
+        rows,
+        key=lambda r: (
+            -int(r.get("keyword_overlap", 0) or 0),
+            -int(r.get("citation_count", 0) or 0),
+            -int(r.get("year", 0) or 0),
+        ),
+    )
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in by_kw[:kw_quota]:
+        k = _screen_row_key(r)
+        if k and k not in seen:
+            seen.add(k)
+            selected.append(r)
+    by_cite = sorted(rows, key=lambda r: -int(r.get("citation_count", 0) or 0))
+    for r in by_cite[:cite_quota]:
+        if int(r.get("citation_count", 0) or 0) <= 0:
+            break  # nothing more worth rescuing by citation
+        k = _screen_row_key(r)
+        if k and k not in seen:
+            seen.add(k)
+            selected.append(r)
+    return selected
+
+
+def _compact_for_screen(
+    rows: list[dict[str, Any]],
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """Build a compact, id-referenced candidate list for the screener.
+
+    Sends only id/title/year/venue/citations/source (NO abstract or echoed
+    fields) so the input stays small and the LLM can reply with just ids +
+    scores — preventing the output truncation that previously discarded the
+    whole shortlist. Returns the JSONL text and an id -> full-row map.
+    """
+    id_to_row: dict[str, dict[str, Any]] = {}
+    lines: list[str] = []
+    for i, r in enumerate(rows):
+        cid = str(r.get("paper_id") or "").strip()
+        if not cid or cid in id_to_row:
+            cid = f"c{i}"
+        id_to_row[cid] = r
+        compact = {
+            "id": cid,
+            "title": r.get("title", ""),
+            "year": r.get("year"),
+            "venue": r.get("venue", ""),
+            "citations": r.get("citation_count"),
+            "source": r.get("source", ""),
+        }
+        lines.append(json.dumps(compact, ensure_ascii=False))
+    return "\n".join(lines), id_to_row
+
+
+def _join_screen_shortlist(
+    llm_rows: list[Any],
+    id_to_row: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Re-attach LLM scores/reasons to the full candidate records by id.
+
+    Falls back to a title match when a model echoes the title instead of the
+    id. Unknown references are skipped.
+    """
+    title_index = {
+        str(r.get("title", "")).lower().strip(): r for r in id_to_row.values()
+    }
+    out: list[dict[str, Any]] = []
+    for item in llm_rows:
+        if not isinstance(item, dict):
+            continue
+        base = id_to_row.get(str(item.get("id", "")).strip())
+        if base is None:
+            base = title_index.get(str(item.get("title", "")).lower().strip())
+        if base is None:
+            continue
+        row = dict(base)
+        if item.get("relevance_score") is not None:
+            row["relevance_score"] = item.get("relevance_score")
+        if item.get("quality_score") is not None:
+            row["quality_score"] = item.get("quality_score")
+        if item.get("keep_reason"):
+            row["keep_reason"] = item.get("keep_reason")
+        out.append(row)
+    return out
+
+
 def _execute_literature_screen(
     stage_dir: Path,
     run_dir: Path,
@@ -649,25 +765,22 @@ def _execute_literature_screen(
         # Strip authors list — not needed for screening and inflates tokens
         row.pop("authors", None)
 
-    # Rebuild candidates_text from filtered rows
-    candidates_text = "\n".join(
-        json.dumps(r, ensure_ascii=False) for r in filtered_rows
-    )
-    # Cap total candidates text size to avoid blowing token budget
-    if len(candidates_text) > _MAX_CANDIDATES_CHARS:
-        # Truncate at newline boundary to avoid cutting mid-JSON-line
+    # Dual-criteria recall + compact id-referenced screening: pick candidates
+    # by BOTH keyword overlap and citation count (so foundational baselines such
+    # as DeepCAD aren't starved by recent keyword-dense papers), then send a
+    # compact, no-abstract id list so the LLM replies with ids+scores only —
+    # which prevents the output truncation that silently discarded the shortlist.
+    selected = _select_screen_candidates(filtered_rows)
+    candidates_text, id_to_row = _compact_for_screen(selected)
+    if len(candidates_text) > _MAX_CANDIDATES_CHARS:  # defensive guard
         candidates_text = candidates_text[:_MAX_CANDIDATES_CHARS].rsplit("\n", 1)[0]
-        logger.info(
-            "Candidates text truncated to %d chars for screening",
-            len(candidates_text),
-        )
     logger.info(
-        "Domain pre-filter: kept %d, dropped %d (keywords: %s)",
-        len(filtered_rows),
-        dropped_count,
-        topic_keywords[:8],
+        "Domain pre-filter: kept %d, dropped %d; screening %d candidates "
+        "(keywords: %s)",
+        len(filtered_rows), dropped_count, len(selected), topic_keywords[:8],
     )
 
+    _MIN_SHORTLIST = 15
     shortlist: list[dict[str, Any]] = []
     if llm is not None:
         _pm = prompts or PromptManager()
@@ -691,34 +804,38 @@ def _execute_literature_screen(
         )
         payload = _safe_json_loads(resp.content, {})
         if isinstance(payload, dict) and isinstance(payload.get("shortlist"), list):
-            shortlist = [row for row in payload["shortlist"] if isinstance(row, dict)]
-    # T2.2: Ensure minimum shortlist size of 15 for adequate related work
-    _MIN_SHORTLIST = 15
+            shortlist = _join_screen_shortlist(payload["shortlist"], id_to_row)
+        if not shortlist:
+            logger.warning(
+                "Stage 5: LLM screen returned no usable shortlist (empty/"
+                "unparseable JSON — often a truncated json_mode response). "
+                "Falling back to citation+keyword ranking; review quality may "
+                "be degraded."
+            )
+
+    # Fallback / supplement draws from the dual-criteria recall set (which keeps
+    # high-citation foundational papers), NOT a pure keyword top-N.
     if not shortlist:
-        rows = (
-            filtered_rows[:_MIN_SHORTLIST]
-            if filtered_rows
-            else _parse_jsonl_rows(candidates_text)[:_MIN_SHORTLIST]
-        )
-        for idx, item in enumerate(rows):
-            item["relevance_score"] = round(0.75 - idx * 0.02, 3)
-            item["quality_score"] = round(0.72 - idx * 0.015, 3)
-            item["keep_reason"] = "Template screened entry"
-            shortlist.append(item)
+        for idx, item in enumerate(selected[:_MIN_SHORTLIST]):
+            row = dict(item)
+            row["relevance_score"] = round(0.75 - idx * 0.02, 3)
+            row["quality_score"] = round(0.72 - idx * 0.015, 3)
+            row["keep_reason"] = "Heuristic fallback (LLM screen unavailable)"
+            shortlist.append(row)
     elif len(shortlist) < _MIN_SHORTLIST:
-        # T2.2: LLM returned too few — supplement from filtered candidates
         existing_titles = {
             str(s.get("title", "")).lower().strip() for s in shortlist
         }
-        for row in filtered_rows:
+        for row in selected:
             if len(shortlist) >= _MIN_SHORTLIST:
                 break
             title_lower = str(row.get("title", "")).lower().strip()
             if title_lower and title_lower not in existing_titles:
-                row.setdefault("relevance_score", 0.5)
-                row.setdefault("quality_score", 0.5)
-                row.setdefault("keep_reason", "Supplemented to meet minimum shortlist")
-                shortlist.append(row)
+                supp = dict(row)
+                supp.setdefault("relevance_score", 0.5)
+                supp.setdefault("quality_score", 0.5)
+                supp.setdefault("keep_reason", "Supplemented to meet minimum shortlist")
+                shortlist.append(supp)
                 existing_titles.add(title_lower)
         logger.info(
             "Stage 5: Supplemented shortlist to %d papers (minimum: %d)",
@@ -734,6 +851,36 @@ def _execute_literature_screen(
     )
 
 
+def _prep_extract_shortlist(
+    rows: list[dict[str, Any]],
+    max_papers: int = 15,
+    abstract_chars: int = 400,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Select the top papers by relevance and render a compact card-extraction
+    input. Bounding the paper count + abstract length keeps the LLM's card JSON
+    from overflowing the completion limit (which silently produced template
+    cards). Returns the compact JSONL and the selected rows (for fallback).
+    """
+    ranked = sorted(
+        rows, key=lambda r: -float(r.get("relevance_score") or 0)
+    )
+    selected = ranked[:max_papers]
+    lines: list[str] = []
+    for r in selected:
+        text = str(r.get("abstract") or "")
+        if len(text) > abstract_chars:
+            text = text[:abstract_chars] + "..."
+        compact = {
+            "cite_key": r.get("cite_key", ""),
+            "title": r.get("title", ""),
+            "year": r.get("year"),
+            "venue": r.get("venue", ""),
+            "abstract": text,
+        }
+        lines.append(json.dumps(compact, ensure_ascii=False))
+    return "\n".join(lines), selected
+
+
 def _execute_knowledge_extract(
     stage_dir: Path,
     run_dir: Path,
@@ -743,15 +890,27 @@ def _execute_knowledge_extract(
     llm: LLMClient | None = None,
     prompts: PromptManager | None = None,
 ) -> StageResult:
-    shortlist = _read_prior_artifact(run_dir, "shortlist.jsonl") or ""
+    shortlist_raw = _read_prior_artifact(run_dir, "shortlist.jsonl") or ""
+    shortlist_rows = _parse_jsonl_rows(shortlist_raw)
 
-    # Inject web context from Stage 4 if available
+    # Bound the extraction workload: only the top papers, compact representation,
+    # so the LLM's card JSON stays within the completion limit (preventing the
+    # truncation that silently produced template-only cards).
+    compact_shortlist, selected_rows = _prep_extract_shortlist(shortlist_rows)
+
+    # Inject a SMALL amount of web context from Stage 4 if available (capped to
+    # avoid bloating the input and crowding out the card output budget).
     web_context = _read_prior_artifact(run_dir, "web_context.md") or ""
+    shortlist = compact_shortlist
     if web_context:
-        shortlist = shortlist + "\n\n--- Web Search Context ---\n" + web_context[:10_000]
+        shortlist = shortlist + "\n\n--- Web Search Context ---\n" + web_context[:1_500]
 
     cards_dir = stage_dir / "cards"
     cards_dir.mkdir(parents=True, exist_ok=True)
+    # Idempotent re-runs: clear stale cards so a prior (e.g. template-fallback)
+    # run doesn't leave orphaned files alongside freshly extracted ones.
+    for _stale in cards_dir.glob("*.md"):
+        _stale.unlink()
     cards: list[dict[str, Any]] = []
     if llm is not None:
         _pm = prompts or PromptManager()
@@ -767,8 +926,15 @@ def _execute_knowledge_extract(
         payload = _safe_json_loads(resp.content, {})
         if isinstance(payload, dict) and isinstance(payload.get("cards"), list):
             cards = [item for item in payload["cards"] if isinstance(item, dict)]
+        if not cards:
+            logger.warning(
+                "Stage 6: LLM knowledge extraction returned no usable cards "
+                "(empty/unparseable JSON — often a truncated json_mode "
+                "response). Falling back to template cards; synthesis quality "
+                "may be degraded."
+            )
     if not cards:
-        rows = _parse_jsonl_rows(shortlist)
+        rows = selected_rows or shortlist_rows
         for idx, paper in enumerate(rows[:6]):
             title = str(paper.get("title", f"Paper {idx + 1}"))
             cards.append(

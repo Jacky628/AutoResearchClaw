@@ -44,6 +44,32 @@ llm:
   fallback_models:
     - "gpt-4.1"
     - "gpt-4o-mini"
+  # --- Independent reviewer/judge model (P0-3: break review same-source) ---
+  # Leave reviewer_model empty (default) to review/judge with the generator
+  # model (legacy behaviour). Set reviewer_model alone to judge with a
+  # different model on the SAME endpoint, or set the reviewer_* provider fields
+  # below for a fully independent provider (e.g. generator=GPT, reviewer=Claude).
+  # Used by Stage 18 (peer review) and Stage 20 (quality gate); the author model
+  # still does generation and revision.
+  reviewer_model: ""          # e.g. "claude-sonnet-4-6" — empty disables
+  reviewer_provider: ""       # e.g. "anthropic" — defaults to provider above
+  reviewer_base_url: ""       # defaults to base_url above
+  reviewer_api_key_env: ""    # e.g. "ANTHROPIC_API_KEY" — defaults to api_key_env
+  reviewer_api_key: ""        # inline key (optional; prefer the env var)
+  # --- Multi-model debate engine (Stage 8 / 14 / 18), opt-in ---
+  # Reuses primary_model + reviewer_model + fallback_models (deduped) as a debate
+  # panel: distinct models argue per role, 1 rebuttal round, then an independent
+  # judge (reviewer_model) scores + synthesizes. Multiplies calls per debate stage.
+  # debate_enabled: false
+  # debate_rounds: 1
+  # --- Best-of-N tournament selection (Stage 8 hypotheses / Stage 9 design), opt-in ---
+  # Generate N candidate artifacts from diverse stances (round-robin over the
+  # debate panel when available), then an independent judge (reviewer_model) scores
+  # and ranks them — only the single winner proceeds. Pipeline stays linear (one
+  # canonical artifact per stage). Records tournament_record.json per stage.
+  # Multiplies calls (~N generations + 1 judge per stage). < 2 disables it.
+  # tournament_enabled: false
+  # tournament_candidates: 3
   # --- MiniMax provider example ---
   # provider: "minimax"
   # api_key_env: "MINIMAX_API_KEY"

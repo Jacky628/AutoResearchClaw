@@ -25,6 +25,44 @@ from researchclaw.prompts import PromptManager
 logger = logging.getLogger(__name__)
 
 
+def _hardware_prompt_block(hw: object) -> str:
+    """Render an authoritative hardware block for the topic_init prompt.
+
+    Anchors the SMART goal's ``Compute`` constraint and ``Achievable`` analysis
+    to the ACTUAL detected machine, overriding the template's generic
+    "single GPU" guidance so goal.md no longer hallucinates an A100/80GB rig.
+    """
+    has_gpu = getattr(hw, "has_gpu", False)
+    gpu_type = getattr(hw, "gpu_type", "cpu")
+    if has_gpu and gpu_type == "cuda":
+        count = getattr(hw, "gpu_count", 1) or 1
+        vram = getattr(hw, "vram_mb", None)
+        total = getattr(hw, "total_vram_mb", None) or (
+            (vram or 0) * count if vram else None
+        )
+        vram_str = f"{vram} MB per card" if vram else "VRAM unknown"
+        total_str = f" ({total} MB total)" if total and count > 1 else ""
+        lines = [
+            f"- GPU: {getattr(hw, 'gpu_name', 'GPU')}",
+            f"- GPU count: {count}",
+            f"- VRAM: {vram_str}{total_str}",
+        ]
+    elif has_gpu and gpu_type == "mps":
+        lines = [f"- GPU: {getattr(hw, 'gpu_name', 'Apple Silicon')} (MPS, unified memory)"]
+    else:
+        lines = ["- GPU: none detected (CPU only)"]
+    body = "\n".join(lines)
+    return (
+        "ACTUAL HARDWARE (base the 'Constraints > Compute' row and the SMART "
+        "'Achievable' analysis on EXACTLY this — do NOT assume a generic "
+        "single-GPU, A100, or 80GB setup):\n"
+        f"{body}\n"
+        "If a method needs more memory than one card provides, prefer 4-bit "
+        "QLoRA, gradient accumulation, FSDP/DDP across the available GPUs, or "
+        "reference-free preference optimization (e.g. ORPO)."
+    )
+
+
 def _execute_topic_init(
     stage_dir: Path,
     run_dir: Path,
@@ -38,6 +76,13 @@ def _execute_topic_init(
     domains = (
         ", ".join(config.research.domains) if config.research.domains else "general"
     )
+
+    # --- Hardware detection FIRST (GPU / MPS / CPU) ---
+    # Detect before generating goal.md so the SMART goal can be planned against
+    # the real machine. When using ssh_remote, detect on the remote host.
+    _ssh_cfg = config.experiment.ssh_remote if config.experiment.mode == "ssh_remote" else None
+    hw = detect_hardware(ssh_config=_ssh_cfg)
+
     if llm is not None:
         _pm = prompts or PromptManager()
         _overlay = _get_evolution_overlay(run_dir, "topic_init")
@@ -49,8 +94,9 @@ def _execute_topic_init(
             project_name=config.project.name,
             quality_threshold=config.research.quality_threshold,
         )
+        user_with_hw = f"{sp.user}\n\n{_hardware_prompt_block(hw)}"
         resp = llm.chat(
-            [{"role": "user", "content": sp.user}],
+            [{"role": "user", "content": user_with_hw}],
             system=sp.system,
         )
         goal_md = resp.content
@@ -84,10 +130,7 @@ Investigate the topic with emphasis on reproducible methods and measurable outco
 """
     (stage_dir / "goal.md").write_text(goal_md, encoding="utf-8")
 
-    # --- Hardware detection (GPU / MPS / CPU) ---
-    # When using ssh_remote, detect hardware on the remote host instead of locally
-    _ssh_cfg = config.experiment.ssh_remote if config.experiment.mode == "ssh_remote" else None
-    hw = detect_hardware(ssh_config=_ssh_cfg)
+    # --- Persist the hardware profile detected above ---
     (stage_dir / "hardware_profile.json").write_text(
         json.dumps(hw.to_dict(), indent=2), encoding="utf-8"
     )

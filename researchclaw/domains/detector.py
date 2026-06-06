@@ -463,6 +463,7 @@ def detect_domain(
     hypotheses: str = "",
     literature: str = "",
     llm: Any | None = None,
+    configured_domains: list[str] | tuple[str, ...] | None = None,
 ) -> DomainProfile:
     """Detect the research domain from topic and context.
 
@@ -502,6 +503,18 @@ def detect_domain(
             "Forced profile id '%s' has no matching profile — falling back",
             _FORCED_PROFILE_ID,
         )
+
+    # Level 0.5: explicit config.research.domains take priority over text
+    # inference — the user declared the field, so don't let RL-/reward-heavy
+    # hypotheses misclassify e.g. a generative CAD project as ml_rl.
+    for dom in (configured_domains or []):
+        profile = get_profile(str(dom).strip())
+        if profile:
+            logger.info(
+                "Domain from configured research.domains: %s (%s)",
+                profile.display_name, profile.domain_id,
+            )
+            return profile
 
     # Level 1: Keyword matching
     domain_id = _keyword_detect(combined_text)
