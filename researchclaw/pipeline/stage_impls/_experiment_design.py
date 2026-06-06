@@ -51,13 +51,14 @@ def _scan_cached_datasets(run_dir: Path) -> set[str]:
     return tokens
 
 
-def _resolve_plan_environment(
-    plan: Any, stage_dir: Path, run_dir: Path, config: RCConfig
-) -> bool:
-    """P1: parse the plan's environment manifest, resolve it against the real
-    runtime (report-only), and persist the resolution next to exp_plan.yaml.
+# P3: max automatic redesign passes when the plan is infeasible on the hardware.
+_MAX_ENV_REDESIGN = 2
 
-    Returns True if a resolution artifact was written.
+
+def _resolve_environment_for_plan(plan: Any, run_dir: Path, config: RCConfig):
+    """Parse + resolve the plan's environment manifest against the real runtime.
+
+    Pure (no disk writes). Returns an EnvironmentResolution, or None on error.
     """
     try:
         from researchclaw.pipeline.stage_impls._code_generation import _probe_packages
@@ -69,36 +70,111 @@ def _resolve_plan_environment(
                 config.experiment.sandbox.python_path,
                 candidates=manifest.import_names,
             )
-        resolution = resolve_environment(
+        return resolve_environment(
             manifest,
             installed or {},
             hw_profile=_load_hardware_profile(run_dir),
             cached_datasets=_scan_cached_datasets(run_dir),
         )
+    except Exception:  # noqa: BLE001
+        logger.debug("Stage 9 environment resolution failed", exc_info=True)
+        return None
+
+
+def _redesign_prompt(plan: Any, constraint: str, hw_profile: Any) -> str:
+    hw_str = json.dumps(hw_profile) if hw_profile else "unknown"
+    return (
+        "The experiment plan below is INFEASIBLE on the available hardware.\n"
+        f"Hardware: {hw_str}\n"
+        f"Problem: {constraint}\n\n"
+        "Redesign the plan to FIT this hardware while keeping the SAME research "
+        "goal and hypotheses. Levers: use a smaller open-weight model, QLoRA/4-bit "
+        "quantization, gradient checkpointing, smaller batch/sequence length, fewer "
+        "parameters, or drop the single component that cannot fit. Do NOT assume "
+        "bigger GPUs or more VRAM than listed above.\n"
+        "Re-emit the COMPLETE YAML plan (ALL keys, including the `environment` block "
+        "with an updated `compute` section reflecting the smaller design). "
+        "Return ONLY the YAML.\n\n"
+        f"Current plan:\n```yaml\n"
+        f"{yaml.dump(plan, default_flow_style=False, allow_unicode=True)}\n```"
+    )
+
+
+def _feasibility_redesign(
+    plan: Any, resolution, run_dir: Path, config: RCConfig, llm: LLMClient | None,
+    *, max_attempts: int = _MAX_ENV_REDESIGN,
+):
+    """P3: if the plan is infeasible on this hardware, re-prompt the design LLM
+    with the constraint and regenerate, up to *max_attempts* times.
+
+    Returns (plan, resolution, attempts). Stops as soon as the plan becomes
+    provisionable, or after max_attempts (leaving an infeasible plan for the
+    human gate to handle — never silently proceeds as if feasible).
+    """
+    attempts = 0
+    while (
+        resolution is not None
+        and resolution.declared
+        and not resolution.provisionable
+        and llm is not None
+        and attempts < max_attempts
+    ):
+        attempts += 1
+        hw = _load_hardware_profile(run_dir)
+        constraint = resolution.compute_detail or "the plan exceeds available hardware"
+        logger.warning(
+            "Stage 9 INFEASIBLE (redesign %d/%d): %s",
+            attempts, max_attempts, constraint,
+        )
+        try:
+            resp = llm.chat(
+                [{"role": "user", "content": _redesign_prompt(plan, constraint, hw)}],
+                max_tokens=8000,
+            )
+            parsed = _unwrap_plan_dict(yaml.safe_load(_extract_yaml_block(resp.content)))
+            if isinstance(parsed, dict):
+                plan = parsed
+            else:
+                logger.warning("Stage 9 redesign produced unparseable plan; stopping")
+                break
+        except Exception:  # noqa: BLE001
+            logger.debug("Stage 9 redesign attempt failed", exc_info=True)
+            break
+        resolution = _resolve_environment_for_plan(plan, run_dir, config)
+    return plan, resolution, attempts
+
+
+def _write_environment_resolution(stage_dir: Path, resolution, redesign_attempts: int) -> bool:
+    """Persist the resolution artifacts. Returns True on success."""
+    if resolution is None:
+        return False
+    try:
+        data = resolution.to_dict()
+        data["redesign_attempts"] = redesign_attempts
         (stage_dir / "environment_resolution.json").write_text(
-            json.dumps(resolution.to_dict(), indent=2), encoding="utf-8"
+            json.dumps(data, indent=2), encoding="utf-8"
         )
         (stage_dir / "environment_resolution.md").write_text(
             resolution.summary_md(), encoding="utf-8"
         )
-        if manifest.declared:
-            logger.info(
-                "Stage 9 environment: runnable_as_is=%s provisionable=%s "
-                "install=%s download=%s compute=%s",
-                resolution.runnable_as_is, resolution.provisionable,
-                resolution.needs_install, resolution.needs_download,
-                resolution.compute_status,
+        if resolution.declared and not resolution.provisionable:
+            # Prominent, gate-visible marker — do NOT proceed as if feasible.
+            (stage_dir / "INFEASIBLE.md").write_text(
+                "# ⛔ Experiment plan INFEASIBLE on this hardware\n\n"
+                f"After {redesign_attempts} automatic redesign attempt(s) the plan "
+                f"still does not fit:\n\n> {resolution.compute_detail}\n\n"
+                "Human action required at the gate: provide bigger hardware, relax "
+                "the requirement, or approve a manually-scoped-down plan.\n\n"
+                + resolution.summary_md(),
+                encoding="utf-8",
             )
-            if not resolution.provisionable:
-                logger.warning(
-                    "Stage 9 environment INFEASIBLE on this hardware: %s",
-                    resolution.compute_detail,
-                )
-        else:
-            logger.info("Stage 9: plan declared no environment manifest")
+            logger.warning(
+                "Stage 9 STILL INFEASIBLE after %d redesign(s): %s",
+                redesign_attempts, resolution.compute_detail,
+            )
         return True
-    except Exception:  # noqa: BLE001
-        logger.debug("Stage 9 environment resolution skipped", exc_info=True)
+    except OSError:  # noqa: BLE001
+        logger.debug("Stage 9 environment resolution write failed", exc_info=True)
         return False
 
 # Best-of-N exploration stances for the Stage 9 design tournament. Each candidate
@@ -723,15 +799,20 @@ def _execute_experiment_design(
     except Exception:
         pass
 
+    # P1+P3: resolve the environment manifest against the real runtime; if the
+    # plan is infeasible on this hardware, redesign it (bounded) BEFORE writing,
+    # so feasibility is visible at the gate and codegen never gets a plan it
+    # cannot run (which is what forces synthetic/placeholder code).
+    _resolution = _resolve_environment_for_plan(plan, run_dir, config)
+    plan, _resolution, _redesign_n = _feasibility_redesign(
+        plan, _resolution, run_dir, config, llm
+    )
+
     (stage_dir / "exp_plan.yaml").write_text(
         yaml.dump(plan, default_flow_style=False, allow_unicode=True),
         encoding="utf-8",
     )
-
-    # P1: resolve the plan's environment manifest against the real runtime so
-    # feasibility (what must be installed/downloaded, or is infeasible) is
-    # visible at the gate, before code generation.
-    _env_resolved = _resolve_plan_environment(plan, stage_dir, run_dir, config)
+    _env_resolved = _write_environment_resolution(stage_dir, _resolution, _redesign_n)
 
     _artifacts = ("exp_plan.yaml",)
     _evidence = ("stage-09/exp_plan.yaml",)
