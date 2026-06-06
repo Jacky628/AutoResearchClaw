@@ -251,6 +251,14 @@ class SandboxConfig:
         "sklearn",
     )
     max_memory_mb: int = 4096
+    # P2: opt-in dependency provisioning. "none" (default) = run as-is, no
+    # install (current behaviour). Any other value enables a setup phase that
+    # builds a per-run venv (--system-site-packages), pip installs
+    # requirements.txt, and runs setup.py for dataset downloads before the
+    # experiment. Local subprocess sandbox cannot hard-seal network at run time
+    # (unlike docker), so the policy mainly toggles provisioning on/off here.
+    network_policy: str = "none"
+    provision_timeout_sec: int = 900
 
 
 @dataclass(frozen=True)
@@ -1293,6 +1301,12 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
                 sandbox_data.get("allowed_imports", SandboxConfig.allowed_imports)
             ),
             max_memory_mb=_safe_int(sandbox_data.get("max_memory_mb"), 4096),
+            network_policy=_validate_network_policy(
+                sandbox_data.get("network_policy", "none"), default="none"
+            ),
+            provision_timeout_sec=_safe_int(
+                sandbox_data.get("provision_timeout_sec"), 900
+            ),
         ),
         docker=DockerSandboxConfig(
             image=docker_data.get("image", "researchclaw/experiment:latest"),
