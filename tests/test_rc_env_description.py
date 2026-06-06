@@ -44,6 +44,17 @@ def test_sandbox_describes_no_network_no_pip(tmp_path: Path) -> None:
     assert "Docker" not in desc
 
 
+def test_sandbox_with_provisioning_announces_setup_phase(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, {
+        "mode": "sandbox",
+        "sandbox": {"python_path": "/opt/env/bin/python", "network_policy": "setup_only"},
+    })
+    desc = _build_env_description(cfg)
+    assert "setup phase" in desc.lower()
+    assert "requirements.txt" in desc and "setup.py" in desc
+    assert "WILL be" in desc  # provisioning promised, not "NO pip"
+
+
 def test_docker_offline_says_no_install(tmp_path: Path) -> None:
     cfg = _config(tmp_path, {"mode": "docker", "docker": {"network_policy": "none"}})
     desc = _build_env_description(cfg)

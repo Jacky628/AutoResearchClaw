@@ -416,8 +416,36 @@ class ExperimentSandbox:
                 metrics={},
             )
 
+        # P2: opt-in dependency provisioning (build venv, pip install
+        # requirements.txt, run setup.py) before the experiment runs, so the
+        # generated code can actually use its declared deps instead of failing
+        # or being written to fake them. Default network_policy="none" → no-op.
+        run_python: str | None = None
+        policy = getattr(self.config, "network_policy", "none")
+        if policy and policy != "none":
+            try:
+                from researchclaw.experiment.provisioning import provision_project
+
+                prov = provision_project(
+                    sandbox_project,
+                    self.config.python_path,
+                    network_policy=policy,
+                    timeout_sec=getattr(self.config, "provision_timeout_sec", 900),
+                )
+                run_python = prov.python_path
+                (sandbox_project / "provision_log.txt").write_text(
+                    prov.log + ("\n\nERRORS:\n" + "\n".join(prov.errors) if prov.errors else ""),
+                    encoding="utf-8",
+                )
+                logger.info(
+                    "Sandbox provisioning: venv=%s pip=%s setup=%s",
+                    prov.venv_created, prov.pip_status, prov.setup_status,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Sandbox provisioning skipped (error): %s", exc)
+
         start = time.monotonic()
-        command = self._build_command(entry, args=args)
+        command = self._build_command(entry, args=args, python_override=run_python)
         logger.debug("Running project sandbox command: %s (cwd=%s)", command, sandbox_project)
 
         result: SandboxResult
@@ -474,11 +502,12 @@ class ExperimentSandbox:
         script_path: Path,
         *,
         args: list[str] | None = None,
+        python_override: str | None = None,
     ) -> list[str]:
         # Convert relative python_path to absolute WITHOUT resolving symlinks.
         # Using .resolve() would follow venv symlinks to the system Python binary,
         # which loses the venv context (site-packages like numpy become unavailable).
-        python = self.config.python_path
+        python = python_override or self.config.python_path
         python_path = Path(python)
         if not python_path.is_absolute() and python != "python":
             python_path = Path.cwd() / python_path

@@ -346,13 +346,25 @@ def _build_pkg_hint(
             )
             miss_preview = ", ".join(missing[:8]) + ("…" if len(missing) > 8 else "")
             missing_clause = f" (e.g. {miss_preview})" if missing else ""
+            policy = getattr(config.experiment.sandbox, "network_policy", "none")
+            if policy and policy != "none":
+                avail_clause = (
+                    f"These are PRE-INSTALLED. You MAY use additional packages "
+                    f"by listing them in requirements.txt — a setup phase pip-installs "
+                    f"it (and runs setup.py for dataset downloads) before the run. "
+                    f"Pre-installed missing examples{missing_clause}.\n"
+                )
+            else:
+                avail_clause = (
+                    f"These are the ONLY non-stdlib packages installed. There is NO "
+                    f"pip install and NO network at runtime, so importing anything "
+                    f"not listed above WILL raise ImportError{missing_clause}.\n"
+                )
             return (
                 f"\nAVAILABLE PACKAGES (sandbox mode — probed from the actual "
                 f"runtime `{config.experiment.sandbox.python_path}`):\n"
                 f"Python stdlib + {', '.join(avail)}.\n"
-                f"These are the ONLY non-stdlib packages installed. There is NO "
-                f"pip install and NO network at runtime, so importing anything "
-                f"not listed above WILL raise ImportError{missing_clause}.\n"
+                f"{avail_clause}"
                 f"{gpu}"
             )
         logger.warning(
@@ -401,6 +413,16 @@ def _build_env_description(config: RCConfig) -> str:
     mode = config.experiment.mode
     if mode == "sandbox":
         py = config.experiment.sandbox.python_path
+        policy = getattr(config.experiment.sandbox, "network_policy", "none")
+        if policy and policy != "none":
+            return (
+                f"local sandbox with a setup phase: first (network ON) a venv is "
+                f"built over the base env, `pip install -r requirements.txt` runs, "
+                f"then `setup.py` runs (dataset downloads); afterwards "
+                f"`{py} -u main.py` runs the experiment. Declare extra packages in "
+                f"requirements.txt and dataset downloads in setup.py — they WILL be "
+                f"provisioned. Base packages are listed in GUIDANCE.md."
+            )
         return (
             f"local sandbox subprocess — executed as `{py} -u main.py` in the "
             f"pre-existing Python environment. NO internet access and NO pip "
