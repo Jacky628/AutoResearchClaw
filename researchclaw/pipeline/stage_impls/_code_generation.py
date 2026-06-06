@@ -224,6 +224,223 @@ def _check_rl_compatibility(code: str) -> list[str]:
     return errors
 
 
+# Candidate import names probed in the real runtime environment so the code
+# generator is told the truth about what is installed. Import names (e.g.
+# "sklearn", "PIL", "cv2"), not pip names. Bounded list keeps the probe to one
+# fast subprocess (find_spec does not import the module).
+_PKG_PROBE_CANDIDATES: tuple[str, ...] = (
+    # core scientific
+    "numpy", "scipy", "pandas", "sklearn", "matplotlib", "seaborn", "statsmodels",
+    # deep learning frameworks
+    "torch", "torchvision", "torchaudio", "jax", "tensorflow",
+    # HF / LLM fine-tuning stack
+    "transformers", "datasets", "accelerate", "peft", "bitsandbytes", "trl",
+    "sentencepiece", "tokenizers", "safetensors",
+    # utils
+    "tqdm", "einops", "timm", "torchmetrics", "networkx", "h5py", "PIL", "yaml",
+    "cv2", "numba", "joblib",
+    # RL
+    "gymnasium", "gym", "stable_baselines3",
+    # geometry / CAD / mesh
+    "cadquery", "trimesh", "open3d", "OCP", "FreeCAD", "shapely",
+    # bio / chem
+    "rdkit", "Bio",
+)
+
+
+def _probe_packages(
+    python_path: str,
+    candidates: tuple[str, ...] = _PKG_PROBE_CANDIDATES,
+    *,
+    timeout: float = 30.0,
+) -> dict[str, bool] | None:
+    """Probe which of *candidates* are importable in *python_path*'s env.
+
+    Runs one subprocess using ``importlib.util.find_spec`` (which locates but
+    does not execute modules). Returns ``{name: installed}`` or ``None`` if the
+    probe could not run (so callers fall back to a static hint rather than
+    breaking the pipeline).
+    """
+    import subprocess
+
+    script = (
+        "import importlib.util as u, json, sys\n"
+        "def has(n):\n"
+        "    try:\n"
+        "        return u.find_spec(n) is not None\n"
+        "    except Exception:\n"
+        "        return False\n"
+        "names = json.loads(sys.argv[1])\n"
+        "print(json.dumps({n: has(n) for n in names}))\n"
+    )
+    try:
+        result = subprocess.run(
+            [python_path, "-c", script, json.dumps(list(candidates))],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("pkg probe could not run (%s): %s", python_path, exc)
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        logger.warning(
+            "pkg probe failed (%s, rc=%s): %s",
+            python_path, result.returncode, (result.stderr or "")[:200],
+        )
+        return None
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError) as exc:
+        logger.warning("pkg probe output unparseable: %s", exc)
+        return None
+
+
+def _device_hint(hw_profile: dict[str, Any] | None) -> str:
+    """GPU/CPU device guidance line(s) for the package hint."""
+    if hw_profile and hw_profile.get("has_gpu"):
+        gpu_type = hw_profile.get("gpu_type", "cuda")
+        gpu_name = hw_profile.get("gpu_name", "GPU")
+        tier = hw_profile.get("tier", "limited")
+        if tier == "high":
+            return (
+                f"GPU: {gpu_name} ({gpu_type}). You MAY use PyTorch with GPU "
+                f"acceleration.\nUse `device = torch.device('{gpu_type}')` for "
+                f"tensor operations.\n"
+            )
+        return (
+            f"GPU: {gpu_name} ({gpu_type}) — LIMITED performance.\n"
+            f"Use `device = torch.device('{gpu_type}')` but design LIGHTWEIGHT "
+            f"experiments:\n"
+            f"- Small models (<1M parameters)\n"
+            f"- Few epochs (<=20)\n"
+            f"- Small datasets (<=10K samples)\n"
+            f"- Avoid large batch sizes\n"
+        )
+    return ""
+
+
+def _build_pkg_hint(
+    config: RCConfig,
+    hw_profile: dict[str, Any] | None,
+    pm: PromptManager,
+) -> str:
+    """Build the AVAILABLE-PACKAGES hint for the code generator.
+
+    For sandbox mode the runtime interpreter is probed directly so the model is
+    told exactly what is installed (and that anything else will ImportError —
+    there is no pip install at runtime). Docker mode (image we don't control
+    from the host) and probe failures fall back to the previous static hint.
+    """
+    mode = config.experiment.mode
+    if mode not in ("sandbox", "docker"):
+        return ""
+
+    if mode == "sandbox":
+        probed = _probe_packages(config.experiment.sandbox.python_path)
+        if probed:
+            avail = sorted(n for n, ok in probed.items() if ok)
+            missing = sorted(n for n, ok in probed.items() if not ok)
+            gpu = _device_hint(hw_profile) or (
+                "No GPU detected — use `device = torch.device('cpu')`.\n"
+            )
+            miss_preview = ", ".join(missing[:8]) + ("…" if len(missing) > 8 else "")
+            missing_clause = f" (e.g. {miss_preview})" if missing else ""
+            return (
+                f"\nAVAILABLE PACKAGES (sandbox mode — probed from the actual "
+                f"runtime `{config.experiment.sandbox.python_path}`):\n"
+                f"Python stdlib + {', '.join(avail)}.\n"
+                f"These are the ONLY non-stdlib packages installed. There is NO "
+                f"pip install and NO network at runtime, so importing anything "
+                f"not listed above WILL raise ImportError{missing_clause}.\n"
+                f"{gpu}"
+            )
+        logger.warning(
+            "pkg_hint: probe failed for %s — falling back to static hint",
+            config.experiment.sandbox.python_path,
+        )
+
+    # Docker (curated image set) or sandbox-probe-failed: static fallback.
+    if mode == "docker":
+        pkg_prefix = "docker mode"
+        net_policy = config.experiment.docker.network_policy
+        base_pkgs = (
+            ", torchvision, torchaudio, matplotlib, seaborn, scipy, "
+            "tqdm, torchdiffeq, gymnasium, networkx, PyYAML, Pillow, "
+            "transformers, datasets, accelerate, peft, bitsandbytes, "
+            "timm, einops, torchmetrics, h5py"
+        )
+        if net_policy == "none":
+            pkg_extras = base_pkgs + " (ONLY pre-installed packages — NO pip install available)"
+        elif net_policy in ("setup_only", "pip_only"):
+            pkg_extras = base_pkgs + ", and additional pip-installable packages via requirements.txt"
+        else:
+            pkg_extras = base_pkgs + ", and additional pip-installable packages (auto-detected from imports)"
+    else:
+        pkg_prefix = "sandbox mode"
+        pkg_extras = ""
+
+    if hw_profile and hw_profile.get("has_gpu"):
+        return (
+            f"\nAVAILABLE PACKAGES ({pkg_prefix}): Python stdlib, numpy, torch, "
+            f"sklearn, scipy, pandas{pkg_extras}.\n"
+            f"{_device_hint(hw_profile)}"
+        )
+    return pm.block("pkg_hint_sandbox")
+
+
+def _build_env_description(config: RCConfig) -> str:
+    """Describe the configured experiment runtime so the code generator targets
+    the *real* environment instead of a hardcoded assumption.
+
+    The execution environment is whatever ``config.experiment.mode`` selects —
+    this string is injected into the beast-mode prompt (replacing the old
+    hardcoded "isolated Docker container with everything pre-installed" claim,
+    which was false for sandbox/ssh/colab modes).
+    """
+    mode = config.experiment.mode
+    if mode == "sandbox":
+        py = config.experiment.sandbox.python_path
+        return (
+            f"local sandbox subprocess — executed as `{py} -u main.py` in the "
+            f"pre-existing Python environment. NO internet access and NO pip "
+            f"install at runtime: use ONLY the packages listed in GUIDANCE.md "
+            f"(requirements.txt is NOT installed)."
+        )
+    if mode == "docker":
+        net = config.experiment.docker.network_policy
+        if net == "none":
+            net_txt = "offline (no network); requirements.txt is NOT installed"
+        elif net in ("setup_only", "pip_only"):
+            net_txt = (
+                "network limited to setup; extra packages may be pip-installed "
+                "via requirements.txt before main.py runs"
+            )
+        else:
+            net_txt = (
+                "network available; extra packages may be pip-installed and "
+                "datasets downloaded"
+            )
+        return (
+            f"isolated Docker container running `python main.py` — {net_txt}. "
+            f"Use the packages listed in GUIDANCE.md."
+        )
+    if mode == "ssh_remote":
+        return (
+            "remote machine over SSH running `python main.py`; use ONLY the "
+            "packages listed in GUIDANCE.md."
+        )
+    if mode == "colab_drive":
+        return (
+            "Google Colab runtime running `python main.py`; use ONLY the "
+            "packages listed in GUIDANCE.md."
+        )
+    return (
+        f"the configured '{mode}' experiment environment; use ONLY the packages "
+        f"listed in GUIDANCE.md and do not assume internet access."
+    )
+
+
 def _execute_code_generation(
     stage_dir: Path,
     run_dir: Path,
@@ -246,56 +463,11 @@ def _execute_code_generation(
     files: dict[str, str] = {}
     validation_log: list[str] = []
 
-    # --- Detect available packages for sandbox ---
     _pm = prompts or PromptManager()
 
-    # --- Hardware-aware package hint ---
+    # --- Package hint: probe the REAL runtime env (no hardcoded assumptions) ---
     hw_profile = _load_hardware_profile(run_dir)
-    if config.experiment.mode in ("sandbox", "docker"):
-        if config.experiment.mode == "docker":
-            pkg_prefix = "docker mode"
-            _net_policy = config.experiment.docker.network_policy
-            _base_pkgs = (
-                ", torchvision, torchaudio, matplotlib, seaborn, scipy, "
-                "tqdm, torchdiffeq, gymnasium, networkx, PyYAML, Pillow, "
-                "transformers, datasets, accelerate, peft, bitsandbytes, "
-                "timm, einops, torchmetrics, h5py"
-            )
-            if _net_policy == "none":
-                pkg_extras = _base_pkgs + " (ONLY pre-installed packages — NO pip install available)"
-            elif _net_policy in ("setup_only", "pip_only"):
-                pkg_extras = _base_pkgs + ", and additional pip-installable packages via requirements.txt"
-            else:
-                pkg_extras = _base_pkgs + ", and additional pip-installable packages (auto-detected from imports)"
-        else:
-            pkg_prefix = "sandbox mode"
-            pkg_extras = ""
-        if hw_profile and hw_profile.get("has_gpu"):
-            gpu_type = hw_profile.get("gpu_type", "cuda")
-            gpu_name = hw_profile.get("gpu_name", "GPU")
-            tier = hw_profile.get("tier", "limited")
-            if tier == "high":
-                device_hint = f"torch.device('{gpu_type}')"
-                pkg_hint = (
-                    f"\nAVAILABLE PACKAGES ({pkg_prefix}): Python stdlib, numpy, torch, sklearn, scipy, pandas{pkg_extras}.\n"
-                    f"GPU: {gpu_name} ({gpu_type}). You MAY use PyTorch with GPU acceleration.\n"
-                    f"Use `device = {device_hint}` for tensor operations.\n"
-                )
-            else:  # limited (low VRAM NVIDIA or MPS)
-                device_hint = f"torch.device('{gpu_type}')"
-                pkg_hint = (
-                    f"\nAVAILABLE PACKAGES ({pkg_prefix}): Python stdlib, numpy, torch, sklearn, scipy, pandas{pkg_extras}.\n"
-                    f"GPU: {gpu_name} ({gpu_type}) — LIMITED performance.\n"
-                    f"Use `device = {device_hint}` but design LIGHTWEIGHT experiments:\n"
-                    f"- Small models (<1M parameters)\n"
-                    f"- Few epochs (<=20)\n"
-                    f"- Small datasets (<=10K samples)\n"
-                    f"- Avoid large batch sizes\n"
-                )
-        else:
-            pkg_hint = _pm.block("pkg_hint_sandbox")
-    else:
-        pkg_hint = ""
+    pkg_hint = _build_pkg_hint(config, hw_profile, _pm)
 
     # --- Compute budget hint ---
     time_budget_sec = config.experiment.time_budget_sec
@@ -573,6 +745,7 @@ def _execute_code_generation(
                     pkg_hint=pkg_hint + "\n" + compute_budget,
                     extra_guidance=extra_guidance,
                     time_budget_sec=config.experiment.time_budget_sec,
+                    env_description=_build_env_description(config),
                 )
 
                 # Persist beast mode log

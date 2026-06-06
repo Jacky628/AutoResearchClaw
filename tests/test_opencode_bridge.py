@@ -14,9 +14,35 @@ from researchclaw.pipeline.opencode_bridge import (
     ComplexityScore,
     OpenCodeBridge,
     OpenCodeResult,
+    _MEGA_PROMPT_TEMPLATE,
+    _render_mega_prompt,
     count_historical_failures,
     score_complexity,
 )
+
+
+class TestMegaPromptEnvDescription:
+    """The beast-mode prompt must describe the *configured* environment, not a
+    hardcoded Docker assumption."""
+
+    def test_template_has_env_placeholder_not_hardcoded_docker(self):
+        assert "{env_description}" in _MEGA_PROMPT_TEMPLATE
+        assert "isolated Docker container with PyTorch" not in _MEGA_PROMPT_TEMPLATE
+
+    def test_render_injects_env_description(self):
+        out = _render_mega_prompt(
+            metric="validity_rate",
+            time_budget_sec=120,
+            env_description="local sandbox subprocess — no network",
+        )
+        assert "local sandbox subprocess — no network" in out
+        assert "validity_rate: <value>" in out
+        assert "120 seconds" in out
+        assert "{env_description}" not in out
+
+    def test_render_preserves_curly_brace_metric(self):
+        out = _render_mega_prompt("F{1}", 60, "env")
+        assert "F{1}: <value>" in out
 
 
 # ============================================================
@@ -225,13 +251,21 @@ class TestOpenCodeBridge:
         assert cfg["model"] == "openai/gpt-4o"
         assert "openai" in cfg["provider"]
 
-    def test_opencode_config_preserves_prefixed_model(self, tmp_path):
-        """Model with '/' prefix (e.g. anthropic/...) should NOT get double-prefixed (BUG-C fix)."""
+    def test_opencode_config_openrouter_uses_native_provider(self, tmp_path):
+        """OpenRouter must use opencode's NATIVE openrouter provider, not the
+        openai (Responses API) provider.
+
+        Regression for the beast-mode "Invalid Responses API request" failure:
+        the openai provider speaks the OpenAI Responses API, which OpenRouter
+        rejects on multi-turn agentic payloads → zero files generated. The
+        native openrouter provider (chat/completions) handles the full loop,
+        and keeps the full vendor-prefixed model id.
+        """
         bridge = OpenCodeBridge(
             model="anthropic/claude-sonnet-4-6",
-            llm_base_url="https://huaxi.openai.azure.com/openai/v1",
-            api_key_env="AZURE_API_KEY",
-            llm_provider="azure",
+            llm_base_url="https://openrouter.ai/api/v1",
+            api_key_env="OPENROUTER_API_KEY",
+            llm_provider="openrouter",
         )
         ws = bridge._prepare_workspace(
             stage_dir=tmp_path,
@@ -243,8 +277,36 @@ class TestOpenCodeBridge:
             time_budget_sec=300,
         )
         cfg = json.loads((ws / "opencode.json").read_text())
-        # Should be "anthropic/claude-sonnet-4-6", NOT "azure/anthropic/claude-sonnet-4-6"
-        assert cfg["model"] == "anthropic/claude-sonnet-4-6"
+        assert cfg["model"] == "openrouter/anthropic/claude-sonnet-4-6"
+        assert "openrouter" in cfg["provider"]
+        # Must NOT shoehorn OpenRouter into the Responses-API openai provider.
+        assert "openai" not in cfg["provider"]
+        assert (
+            cfg["provider"]["openrouter"]["options"]["apiKey"]
+            == "{env:OPENROUTER_API_KEY}"
+        )
+
+    def test_opencode_config_generic_openai_endpoint_uses_openai_provider(self, tmp_path):
+        """A non-OpenRouter custom endpoint still uses the openai provider with
+        the model registered under its basename."""
+        bridge = OpenCodeBridge(
+            model="anthropic/claude-sonnet-4-6",
+            llm_base_url="https://my-llm.example.com/v1",
+            api_key_env="MY_API_KEY",
+            llm_provider="openai-compatible",
+        )
+        ws = bridge._prepare_workspace(
+            stage_dir=tmp_path,
+            topic="t",
+            exp_plan="p",
+            metric="m",
+            pkg_hint="",
+            extra_guidance="",
+            time_budget_sec=300,
+        )
+        cfg = json.loads((ws / "opencode.json").read_text())
+        assert cfg["model"] == "openai/claude-sonnet-4-6"
+        assert "claude-sonnet-4-6" in cfg["provider"]["openai"]["models"]
 
     def test_resolve_model_azure_uses_openai_prefix(self):
         """Azure endpoint → uses openai/ prefix (Azure supports Responses API now)."""
@@ -256,15 +318,34 @@ class TestOpenCodeBridge:
         resolved = bridge._resolve_opencode_model()
         assert resolved == "openai/gpt-5.2"
 
-    def test_resolve_model_preserves_explicit_prefix(self):
-        """Model with '/' prefix should be used as-is regardless of provider."""
+    def test_resolve_model_openrouter_uses_native_provider(self):
+        """OpenRouter resolves to the native "openrouter/<full-id>" provider
+        (keeps the vendor prefix); the openai Responses-API provider breaks on
+        multi-turn agentic requests."""
         bridge = OpenCodeBridge(
             model="anthropic/claude-sonnet-4-6",
-            llm_base_url="https://huaxi.openai.azure.com/openai/v1",
-            llm_provider="azure",
+            llm_base_url="https://openrouter.ai/api/v1",
+            api_key_env="OPENROUTER_API_KEY",
+            llm_provider="openrouter",
         )
-        resolved = bridge._resolve_opencode_model()
-        assert resolved == "anthropic/claude-sonnet-4-6"
+        assert bridge._resolve_opencode_model() == "openrouter/anthropic/claude-sonnet-4-6"
+
+    def test_resolve_model_generic_endpoint_strips_vendor_prefix(self):
+        """A non-OpenRouter custom endpoint resolves to "openai/<basename>" so
+        the -m flag matches the registered openai provider."""
+        bridge = OpenCodeBridge(
+            model="anthropic/claude-sonnet-4-6",
+            llm_base_url="https://my-llm.example.com/v1",
+            api_key_env="MY_API_KEY",
+            llm_provider="openai-compatible",
+        )
+        assert bridge._resolve_opencode_model() == "openai/claude-sonnet-4-6"
+
+    def test_resolve_model_preserves_prefix_without_base_url(self):
+        """No custom endpoint → honor the explicit provider prefix as-is
+        (lets users target opencode's built-in providers directly)."""
+        bridge = OpenCodeBridge(model="anthropic/claude-sonnet-4-6")
+        assert bridge._resolve_opencode_model() == "anthropic/claude-sonnet-4-6"
 
     def test_resolve_model_no_model_default(self):
         """Empty model string → default Anthropic model."""

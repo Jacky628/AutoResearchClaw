@@ -250,11 +250,27 @@ Your task:
 9. If the experiment needs dataset downloads, write a setup.py that handles them.
 
 IMPORTANT CONSTRAINTS:
-- The code will run in an isolated Docker container with PyTorch, torchvision, and common ML packages pre-installed.
+- The code will run in the experiment environment configured in the project config: {env_description}
 - Do NOT use argparse or CLI arguments — hardcode all configuration.
 - All output must go to stdout (print statements).
 - Keep the experiment feasible within {time_budget_sec} seconds total.
 """
+
+
+def _render_mega_prompt(
+    metric: str, time_budget_sec: int, env_description: str
+) -> str:
+    """Render the beast-mode prompt.
+
+    Uses ``str.replace`` (not ``.format``) so a metric containing curly braces
+    like ``F{1}`` does not raise KeyError.
+    """
+    return (
+        _MEGA_PROMPT_TEMPLATE
+        .replace("{metric}", metric)
+        .replace("{time_budget_sec}", str(time_budget_sec))
+        .replace("{env_description}", env_description)
+    )
 
 
 class OpenCodeBridge:
@@ -382,6 +398,23 @@ class OpenCodeBridge:
             or "azure" in (self._llm_provider or "").lower()
         )
 
+    def _is_openrouter(self) -> bool:
+        """Detect OpenRouter from base URL or provider string.
+
+        OpenRouter must NOT be routed through opencode's "openai" provider:
+        that provider speaks the OpenAI *Responses API* (``/responses``), and
+        while OpenRouter accepts trivial single-turn Responses requests, its
+        implementation rejects the multi-turn agentic payloads opencode emits
+        (tool results / reasoning items) with ``Invalid Responses API request``
+        — so beast mode writes zero files. opencode ships a *native* openrouter
+        provider (chat/completions) that handles the full agentic loop, so we
+        target that instead.
+        """
+        return (
+            "openrouter" in (self._llm_provider or "").lower()
+            or "openrouter" in (self._llm_base_url or "").lower()
+        )
+
     def _build_opencode_config(self) -> dict[str, Any]:
         """Build the opencode.json configuration.
 
@@ -393,12 +426,32 @@ class OpenCodeBridge:
             "$schema": "https://opencode.ai/config.json",
         }
 
-        if self._llm_base_url:
+        if self._is_openrouter():
+            # Native openrouter provider (chat/completions). Keep the full
+            # vendor-prefixed model id — the native provider knows OpenRouter's
+            # model catalog, so no per-model registration is needed.
             if self._model:
-                cfg["model"] = (
-                    self._model if "/" in self._model
-                    else f"openai/{self._model}"
-                )
+                cfg["model"] = f"openrouter/{self._model}"
+            cfg["provider"] = {
+                "openrouter": {
+                    "options": {
+                        "apiKey": f"{{env:{self._api_key_env}}}"
+                        if self._api_key_env
+                        else "",
+                    },
+                }
+            }
+            return cfg
+
+        if self._llm_base_url:
+            # The model is always registered under the "openai" provider keyed
+            # by its basename (vendor prefixes like "anthropic/" are an upstream
+            # routing convention, not an opencode provider). cfg["model"] must
+            # therefore reference "openai/<basename>" — passing the raw vendor
+            # prefix sends opencode to its built-in provider (needs that
+            # vendor's own API key) and the call hangs/fails.
+            if self._model:
+                cfg["model"] = f"openai/{self._model.split('/')[-1]}"
             cfg["provider"] = {
                 "openai": {
                     "options": {
@@ -436,15 +489,24 @@ class OpenCodeBridge:
         """Resolve the model identifier for OpenCode CLI's ``-m`` flag.
 
         Resolution order:
-        1. If model already contains "/" (e.g. "anthropic/claude-sonnet-4-6") → use as-is
-        2. Otherwise → "openai/{model}" (works for both Azure and standard OpenAI)
-
-        Note: Azure AI Services now supports the Responses API with Bearer
-        token auth via the OpenAI-compatible endpoint, so we use the "openai"
-        provider universally — no Anthropic fallback needed.
+        1. No model → default "anthropic/claude-sonnet-4-6".
+        2. OpenRouter → native "openrouter/<full-id>" provider (the openai
+           Responses-API provider breaks on multi-turn agentic requests; see
+           _is_openrouter). Keep the vendor prefix — OpenRouter needs the full
+           "anthropic/claude-sonnet-4.6" model id.
+        3. Other custom OpenAI-compatible endpoint (Azure/standard OpenAI) →
+           the model is registered under the "openai" provider keyed by
+           basename, so strip any vendor prefix and return "openai/<basename>"
+           to match _build_opencode_config().
+        4. No custom endpoint → honor an explicit provider prefix as-is (lets
+           users target opencode's built-in providers), else "openai/{model}".
         """
         if not self._model:
             return "anthropic/claude-sonnet-4-6"
+        if self._is_openrouter():
+            return f"openrouter/{self._model}"
+        if self._llm_base_url:
+            return f"openai/{self._model.split('/')[-1]}"
         if "/" in self._model:
             return self._model
         return f"openai/{self._model}"
@@ -458,14 +520,17 @@ class OpenCodeBridge:
     ) -> tuple[bool, str, float]:
         """Run ``opencode run`` in the workspace. Returns (success, log, elapsed)."""
         env = os.environ.copy()
-        # Pass API key via environment if configured
+        # Pass API key via environment if configured. The env var name must
+        # match the provider opencode resolves the model under: the native
+        # openrouter provider reads OPENROUTER_API_KEY; the openai provider
+        # (standard OpenAI / Azure via Bearer auth) reads OPENAI_API_KEY.
         if self._api_key_env:
             api_key = os.environ.get(self._api_key_env, "")
             if api_key:
-                # We always use the "openai" provider for OpenCode now,
-                # which reads OPENAI_API_KEY (works for Azure too via
-                # Bearer token auth on the OpenAI-compatible endpoint).
-                env["OPENAI_API_KEY"] = api_key
+                if self._is_openrouter():
+                    env["OPENROUTER_API_KEY"] = api_key
+                else:
+                    env["OPENAI_API_KEY"] = api_key
 
         # Use -m flag to specify model (more reliable than opencode.json)
         resolved_model = self._resolve_opencode_model()
@@ -645,11 +710,23 @@ class OpenCodeBridge:
         pkg_hint: str = "",
         extra_guidance: str = "",
         time_budget_sec: int = 300,
+        env_description: str = "",
     ) -> OpenCodeResult:
         """Run OpenCode to generate experiment code.
 
+        ``env_description`` describes the configured experiment environment the
+        generated code will actually run in (mode, package availability, network
+        policy). It is injected into the mega-prompt so the model targets the
+        real environment instead of a hardcoded assumption.
+
         Returns an OpenCodeResult with success status and generated files.
         """
+        if not env_description:
+            env_description = (
+                "the configured experiment environment — use only the packages "
+                "listed in GUIDANCE.md; do not assume internet access or pip "
+                "installs are available at runtime."
+            )
         # Check availability first
         if not self.check_available():
             return OpenCodeResult(
@@ -677,13 +754,8 @@ class OpenCodeBridge:
                 logger.warning("Beast mode: %s", last_error)
                 continue
 
-            # Build the mega-prompt (use replace instead of .format() to
-            # avoid KeyError when metric contains curly braces like "F{1}")
-            prompt = _MEGA_PROMPT_TEMPLATE.replace(
-                "{metric}", metric
-            ).replace(
-                "{time_budget_sec}", str(time_budget_sec)
-            )
+            # Build the mega-prompt
+            prompt = _render_mega_prompt(metric, time_budget_sec, env_description)
 
             logger.info(
                 "Beast mode: invoking OpenCode (attempt %d/%d, timeout=%ds)",
