@@ -790,6 +790,55 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
         ),
         "max_tokens": 8192,
     },
+    "review_synthesize": {
+        "system": (
+            "You are the area chair synthesizing several independent peer "
+            "reviews into one decision-oriented review report. Do not flatten "
+            "disagreement — surface the most serious concerns prominently and "
+            "do not soften them."
+        ),
+        "user": (
+            "Below are independent reviews of the paper from different "
+            "reviewers.\n"
+            "Synthesize them into a final review report with these sections:\n"
+            "## Summary\n## Strengths\n## Weaknesses (most serious first)\n"
+            "## Actionable Revisions (numbered, specific)\n"
+            "## Recommendation (ACCEPT / MINOR REVISION / MAJOR REVISION / "
+            "REJECT)\n\n"
+            "{perspectives}"
+        ),
+        "max_tokens": 6144,
+    },
+    "tournament_rank": {
+        "system": (
+            "You score and rank competing research artifacts, distinct from the "
+            "authors. Score each candidate 1-10 on novelty, feasibility, and "
+            "rigor, then pick the SINGLE best. Be decisive and critical — do not "
+            "average or hedge."
+        ),
+        "user": (
+            "Below are {n} candidate research artifacts. Score and rank them, "
+            "then choose the best.\n"
+            "Return ONLY JSON (no prose, no markdown fences):\n"
+            '{"rankings": [{"id": <int>, "score": <1-10>, "reason": <str>}], '
+            '"winner": <int>}\n\n'
+            "{candidates}"
+        ),
+    },
+    "debate_rebuttal": {
+        "system": (
+            "You are participating in a structured research debate as the "
+            "{role} perspective. You have seen the other perspectives. Push back "
+            "on their weak points, defend or REVISE your own position with "
+            "evidence, and concede where they are right. Be rigorous, not "
+            "stubborn."
+        ),
+        "user": (
+            "Your previous position ({role}):\n{own_position}\n\n"
+            "Other perspectives this round:\n{others}\n\n"
+            "Write your rebuttal and updated position."
+        ),
+    },
     "code_repair": {
         "system": "You fix Python code validation errors while preserving functionality.",
         "user": (
@@ -906,9 +955,18 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "- `dependencies`: list of other files this file imports from\n"
             "- `classes` or `functions`: with pseudocode for each method\n"
             "- For neural network classes: input/output tensor shapes\n\n"
+            "FILENAME COLLISION WARNING (BUG-202):\n"
+            "Do NOT name files after pip/stdlib packages. Forbidden stems include:\n"
+            "`config`, `tokenizers`, `datasets`, `transformers`, `peft`, `accelerate`,\n"
+            "`torch`, `numpy`, `pandas`, `sklearn`, `scipy`, `io`, `json`, `time`,\n"
+            "`random`, `logging`, `string`, `tokenize`, `email`, `calendar`, `queue`.\n"
+            "If you need one of these concepts, prefix with `experiment_`, `cad_`,\n"
+            "`my_`, or similar (e.g. `experiment_config.py`, `cad_tokenizers.py`).\n"
+            "Shadowing causes ImportError when the LLM's own generated code tries\n"
+            "to import the real pip package.\n\n"
             "```yaml\n"
             "files:\n"
-            "  - name: config.py\n"
+            "  - name: experiment_config.py\n"
             "    generation_order: 1\n"
             "    dependencies: []\n"
             "    purpose: Hyperparameter configuration\n"
@@ -921,7 +979,7 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "          - hidden_dim: 128\n\n"
             "  - name: data.py\n"
             "    generation_order: 2\n"
-            "    dependencies: [config.py]\n"
+            "    dependencies: [experiment_config.py]\n"
             "    purpose: Dataset loading and preprocessing\n"
             "    functions:\n"
             "      - name: get_dataloaders\n"
@@ -933,7 +991,7 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "          4. Return DataLoaders with config.batch_size\n\n"
             "  - name: models.py\n"
             "    generation_order: 3\n"
-            "    dependencies: [config.py]\n"
+            "    dependencies: [experiment_config.py]\n"
             "    purpose: All model implementations\n"
             "    classes:\n"
             "      - name: BaseModel(nn.Module)\n"
@@ -964,7 +1022,7 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "              3. return task_loss + lambda * reg\n\n"
             "  - name: training.py\n"
             "    generation_order: 4\n"
-            "    dependencies: [config.py, data.py, models.py]\n"
+            "    dependencies: [experiment_config.py, data.py, models.py]\n"
             "    purpose: Training loop and evaluation\n"
             "    functions:\n"
             "      - name: train_one_epoch\n"
@@ -981,7 +1039,7 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
             "          3. Return {accuracy, loss}\n\n"
             "  - name: main.py\n"
             "    generation_order: 5\n"
-            "    dependencies: [config.py, data.py, models.py, training.py]\n"
+            "    dependencies: [experiment_config.py, data.py, models.py, training.py]\n"
             "    purpose: Entry point — runs ALL conditions\n"
             "    contract:\n"
             "      prints_metric_def: true\n"

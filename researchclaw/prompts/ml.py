@@ -202,17 +202,44 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
     # ── Phase B: Literature Discovery ────────────────────────────────────
     "search_strategy": {
         "system": (
-            "You design literature retrieval strategies and source verification plans."
+            "You design literature retrieval strategies and source verification "
+            "plans. Output ONLY compact machine-readable JSON — no prose, no "
+            "nested keyword taxonomies, no keys beyond the schema you are given."
         ),
         "user": (
-            "Create a merged search strategy package.\n"
-            "Return a JSON object with keys: search_plan_yaml, sources.\n"
-            "search_plan_yaml must be valid YAML text.\n"
-            "sources must include id,name,type,url,status,query,verified_at.\n"
+            "Create a merged search strategy package as ONE JSON object with "
+            "exactly two keys: search_plan_yaml (a YAML string) and sources (a "
+            "list). Keep it compact — the whole response must fit in well under "
+            "1500 tokens.\n\n"
+            "search_plan_yaml MUST be valid YAML following EXACTLY this schema "
+            "and NOTHING more (do not add sub_questions, keyword trees, or extra "
+            "keys):\n"
+            "  topic: <string>\n"
+            "  search_strategies:\n"
+            "    - name: keyword_core\n"
+            "      queries: [<6-10 short queries>]\n"
+            "      sources: [arxiv, semantic_scholar, openreview]\n"
+            "      max_results_per_query: 60\n"
+            "    - name: backward_forward_citation\n"
+            "      queries: [<2-4 short queries>]\n"
+            "      sources: [semantic_scholar, google_scholar]\n"
+            "      depth: 1\n"
+            "  filters: {min_year: 2020, language: [en], peer_review_preferred: true}\n"
+            "  deduplication: {method: title_doi_hash, fuzzy_threshold: 0.9}\n\n"
+            "QUERY RULES (critical):\n"
+            "- Each query is 3-8 keywords — NOT the full title, NOT a sentence, "
+            "NOT generic word fragments like 'fine-tuning llms'.\n"
+            "- Derive queries from the CONCRETE methods, datasets, model families, "
+            "and techniques named in the problem tree (e.g. specific dataset and "
+            "baseline names), so they retrieve the most relevant prior work.\n"
+            "- Collectively cover the distinct sub-questions; name the key "
+            "artifacts (datasets, baselines, methods) explicitly.\n\n"
+            "sources: list of objects with id,name,type,url,status,query,verified_at.\n"
             "Topic: {topic}\n"
             "Problem tree:\n{problem_tree}"
         ),
         "json_mode": True,
+        "max_tokens": 2000,
     },
     "literature_collect": {
         "system": "You are a literature mining assistant.",
@@ -237,46 +264,50 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "neural networks for molecular property prediction'."
         ),
         "user": (
-            "Perform merged relevance+quality screening and return shortlist.\n"
-            "Return JSON: {shortlist:[...]} each with title, cite_key "
-            "(if present), relevance_score (0-1), quality_score (0-1), "
-            "keep_reason.\n"
-            "Preserve all original fields (paper_id, doi, arxiv_id, cite_key, "
-            "etc.) from the input.\n"
+            "Screen the candidate papers and return a shortlist.\n"
+            "Each candidate has a stable `id`. Reference kept papers by that "
+            "`id` ONLY — do NOT echo titles, abstracts, or other fields "
+            "(this keeps the response small and parseable).\n"
+            "Return JSON: {shortlist:[{id, relevance_score (0-1), "
+            "quality_score (0-1), keep_reason}]}. Keep at most 25 papers; "
+            "keep_reason must be <= 15 words.\n"
             "Topic: {topic}\n"
             "Domains: {domains}\n"
             "Threshold: {quality_threshold}\n\n"
             "SCREENING RULES (apply strictly):\n"
             "1. DOMAIN MATCH: The paper's actual research domain must match "
             "the topic's domain. Shared keywords across domains do NOT count.\n"
-            "2. METHOD RELEVANCE: The paper must discuss methods, benchmarks, "
-            "or findings directly applicable to the research topic.\n"
+            "2. METHOD RELEVANCE: Keep papers whose methods, benchmarks, or "
+            "findings are directly applicable to the research topic.\n"
             "3. CROSS-DOMAIN REJECTION: Reject papers from unrelated fields "
-            "(e.g., wireless communications, database systems, social science) "
-            "even if they use similar terminology.\n"
-            "4. RECENCY PREFERENCE: Prefer papers from 2020+ for methodology, "
-            "but accept foundational papers (pre-2020) if they introduced key "
-            "techniques still in use today.\n"
-            "5. SEMINAL PAPERS: Papers marked as source='seminal_library' are "
-            "pre-vetted foundational references — keep them if their keywords "
-            "match the topic (relevance_score >= 0.7).\n"
-            "6. QUALITY FLOOR: Reject papers with no abstract, no venue, and "
-            "no citation count (likely not real papers).\n"
-            "Candidates JSONL:\n{candidates_text}"
+            "(e.g., wireless communications, database systems, biology, "
+            "social science) even if they use similar terminology.\n"
+            "4. FOUNDATIONAL BASELINES (IMPORTANT): ALWAYS keep the core "
+            "datasets, benchmarks, and baseline methods the topic is built on "
+            "or evaluated against, even if older or with lower keyword "
+            "overlap — they are required for related work and comparison.\n"
+            "5. RECENCY: Prefer 2020+ for methodology; keep highly-cited "
+            "foundational papers regardless of year.\n"
+            "Candidates (compact JSONL, one per line):\n{candidates_text}"
         ),
         "json_mode": True,
+        "max_tokens": 3000,
     },
     "knowledge_extract": {
         "system": "You extract high-signal evidence cards from papers.",
         "user": (
-            "Extract structured knowledge cards from shortlist.\n"
+            "Extract one structured knowledge card per paper in the shortlist.\n"
             "Return JSON: {cards:[{card_id,title,cite_key,problem,method,"
             "data,metrics,findings,limitations,citation}]}.\n"
+            "Keep each of problem/method/data/metrics/findings/limitations to "
+            "ONE concise sentence (<= 25 words) so the response stays compact "
+            "and complete.\n"
             "IMPORTANT: If the input contains cite_key fields, preserve them "
             "exactly in the output.\n"
             "Shortlist:\n{shortlist}"
         ),
         "json_mode": True,
+        "max_tokens": 6000,
     },
     # ── Phase C: Knowledge Synthesis ─────────────────────────────────────
     "synthesis": {
@@ -332,7 +363,14 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "{domain_design_context}"
             "Design an experiment plan as YAML.\n"
             "Required keys: objectives,datasets,baselines,proposed_methods,"
-            "ablations,metrics,risks,compute_budget.\n\n"
+            "ablations,metrics,risks,compute_budget.\n"
+            "OUTPUT MUST BE COMPLETE & PARSEABLE: keep the whole YAML under ~250 "
+            "lines so it is never truncated; favour concise one-line list items. "
+            "Do NOT put a colon (:) inside any list item text (it breaks YAML "
+            "parsing) — rephrase using a dash or 'equals' instead, or wrap the "
+            "whole item in double quotes.\n"
+            "Put the required keys at the TOP LEVEL of the YAML — do NOT nest them "
+            "under an 'experiment_plan' or any other parent key.\n\n"
             "NAMING REQUIREMENT (CRITICAL for paper quality):\n"
             "- Every condition name in baselines, proposed_methods, and ablations MUST be "
             "a DESCRIPTIVE algorithm name DERIVED FROM THE HYPOTHESES ABOVE, NOT a generic label.\n"
@@ -404,15 +442,23 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "- 3 seeds is INSUFFICIENT — reviewers will reject papers with n=3\n\n"
             "HARDWARE ENVIRONMENT (your experiments run on THIS exact machine):\n"
             "{hardware_profile}\n"
-            "- You have exactly ONE GPU. No distributed training. No multi-GPU. No multi-node.\n"
-            "- Design experiments that fit this single GPU.\n\n"
+            "- Use ONLY the GPU(s) listed above; assume no other hardware exists. "
+            "If multiple GPUs are listed you MAY use DDP/FSDP across them; otherwise "
+            "single-GPU only. No multi-node.\n"
+            "- compute_budget MUST be expressed in terms of THIS hardware (GPU-hours on "
+            "the listed cards) — do NOT invent A100/H100 clusters or cloud dollar budgets.\n"
+            "- Use ONLY open-weight models (e.g. Qwen/LLaMA/Mistral); NO GPT-4 or other "
+            "proprietary APIs as methods or baselines.\n"
+            "- All metrics MUST be computable automatically in code; NO human/expert "
+            "user studies.\n"
+            "- Design experiments that fit this hardware and the time budget below.\n\n"
             "COMPUTE BUDGET CONSTRAINT (CRITICAL — experiments MUST fit time budget):\n"
             "- Total experiment time budget: {time_budget_sec} seconds.\n"
             "- Per-condition budget: ~{per_condition_budget_sec} seconds "
             "(= time_budget × 0.7 / 6 conditions).\n"
             "- Pre-cached datasets (instant, no download): {available_tier1_datasets}\n"
-            "- DO NOT plan experiments requiring multiple GPUs or more than "
-            "{time_budget_sec}s.\n"
+            "- DO NOT plan experiments requiring more hardware than listed above, or "
+            "taking more than {time_budget_sec}s.\n"
             "- HARD CONDITION LIMIT: The total number of conditions (baselines + "
             "proposed_methods + ablations) MUST NOT exceed 8 for budgets ≤ 3600s.\n"
             "  * Recommended: 2-3 baselines + 1-2 proposed methods + 2-3 ablations = 5-8 total.\n"
@@ -456,6 +502,7 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "stage cannot produce correct implementations.\n\n"
             "Hypotheses:\n{hypotheses}"
         ),
+        "max_tokens": 8000,
     },
     "code_generation": {
         "system": (

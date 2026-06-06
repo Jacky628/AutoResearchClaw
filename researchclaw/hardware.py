@@ -33,9 +33,11 @@ class HardwareProfile:
     has_gpu: bool
     gpu_type: str  # "cuda" | "mps" | "cpu"
     gpu_name: str  # e.g. "NVIDIA RTX 4090" / "Apple M3 Pro" / "CPU only"
-    vram_mb: int | None  # NVIDIA only; None for MPS/CPU
+    vram_mb: int | None  # per-card VRAM (NVIDIA only; None for MPS/CPU)
     tier: str  # "high" | "limited" | "cpu_only"
     warning: str  # User-facing warning message (empty if tier=high)
+    gpu_count: int = 1  # number of GPUs detected (NVIDIA can report many)
+    total_vram_mb: int | None = None  # vram_mb * gpu_count (aggregate)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -169,17 +171,25 @@ def _detect_nvidia() -> HardwareProfile | None:
         if result.returncode != 0:
             return None
 
-        # Parse first GPU line: "NVIDIA GeForce RTX 4090, 24564"
-        line = result.stdout.strip().splitlines()[0].strip()
-        parts = [p.strip() for p in line.split(",")]
+        # nvidia-smi prints one line per GPU: "NVIDIA GeForce RTX 4090, 24564".
+        # Parse every line so multi-GPU machines aren't truncated to card 0.
+        lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
+        if not lines:
+            return None
+
+        parts = [p.strip() for p in lines[0].split(",")]
         if len(parts) < 2:
             return None
 
-        gpu_name = parts[0]
+        base_name = parts[0]
         try:
-            vram_mb = int(float(parts[1]))
+            vram_mb = int(float(parts[1]))  # per-card VRAM (assume homogeneous)
         except (ValueError, IndexError):
             vram_mb = 0
+
+        gpu_count = len(lines)
+        total_vram_mb = vram_mb * gpu_count if vram_mb else vram_mb
+        gpu_name = f"{gpu_count}× {base_name}" if gpu_count > 1 else base_name
 
         if vram_mb >= _HIGH_VRAM_THRESHOLD_MB:
             tier = "high"
@@ -187,9 +197,9 @@ def _detect_nvidia() -> HardwareProfile | None:
         else:
             tier = "limited"
             warning = (
-                f"Local GPU ({gpu_name}, {vram_mb} MB VRAM) has limited memory. "
-                "Complex deep learning experiments may be slow or run out of memory. "
-                "Consider using a remote GPU server for best results."
+                f"Local GPU ({gpu_name}, {vram_mb} MB VRAM per card) has limited "
+                "memory. Complex deep learning experiments may be slow or run out "
+                "of memory. Consider using a remote GPU server for best results."
             )
 
         return HardwareProfile(
@@ -199,6 +209,8 @@ def _detect_nvidia() -> HardwareProfile | None:
             vram_mb=vram_mb,
             tier=tier,
             warning=warning,
+            gpu_count=gpu_count,
+            total_vram_mb=total_vram_mb,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None

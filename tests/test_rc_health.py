@@ -138,6 +138,32 @@ def test_check_llm_connectivity_http_error() -> None:
     assert "503" in result.detail
 
 
+def test_check_llm_connectivity_reset_falls_back_to_get() -> None:
+    # Some proxies reset the TCP connection on HEAD instead of returning 405;
+    # the check should fall back to a GET probe and pass.
+    reset = urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+    calls = [reset, _DummyHTTPResponse(status=200)]
+
+    def _side_effect(*_args: object, **_kwargs: object) -> object:
+        result = calls.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    with patch("urllib.request.urlopen", side_effect=_side_effect):
+        result = health.check_llm_connectivity("https://api.example.com/v1")
+    assert result.status == "pass"
+
+
+def test_check_llm_connectivity_reset_get_also_fails() -> None:
+    # HEAD reset and the GET fallback also fails → still a genuine failure.
+    reset = urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+    with patch("urllib.request.urlopen", side_effect=reset):
+        result = health.check_llm_connectivity("https://api.example.com/v1")
+    assert result.status == "fail"
+    assert "Connection reset by peer" in result.detail
+
+
 def test_check_api_key_valid() -> None:
     with patch(
         "urllib.request.urlopen",

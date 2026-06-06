@@ -948,9 +948,14 @@ def annotate_paper_hallucinations(
         result,
     )
 
-    # Clean up artifacts: double spaces, empty parenthetical citations, orphan punctuation
+    # Clean up artifacts: double spaces, empty parenthetical citations, orphan
+    # punctuation, and spaces stranded before punctuation when a cite was
+    # removed (e.g. "method [foo2024] ." → "method ."). Mirrors the cleanup
+    # in runner.py deliverables packaging so paper_final.md and paper.tex
+    # stay in sync.
     result = re.sub(r" {2,}", " ", result)
     result = re.sub(r"\(\s*\)", "", result)
     result = re.sub(r"\[\s*\]", "", result)
+    result = re.sub(r" ([.,;:)])", r"\1", result)
 
     return result

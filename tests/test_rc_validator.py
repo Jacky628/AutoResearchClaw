@@ -393,3 +393,16 @@ def test_filename_collision_multiple_shadows():
     files = {"config.py": "", "logging.py": "", "main.py": ""}
     warnings = check_filename_collisions(files)
     assert len(warnings) == 2
+
+
+def test_filename_collision_detects_ml_pkg_shadows():
+    """ML/DL pip package names (tokenizers, datasets, peft…) must be flagged.
+
+    Originating incident: Stage 10 produced ``tokenizers.py`` which shadowed the
+    pip ``tokenizers`` package that transformers depends on, causing ImportError
+    at runtime.
+    """
+    for stem in ("tokenizers", "datasets", "transformers", "peft", "accelerate", "numpy", "torch"):
+        warnings = check_filename_collisions({f"{stem}.py": ""})
+        assert len(warnings) == 1, f"Expected {stem}.py to be flagged"
+        assert stem in warnings[0]

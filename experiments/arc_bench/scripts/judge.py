@@ -257,7 +257,10 @@ _SUMMARY_CAP = 8000
 _WRITEUP_CAP = 6000
 
 _SYSTEM_PROMPT = (
-    "You are a rigorous scientific code reviewer grading AI-generated experiment submissions "
+    "You are an INDEPENDENT scientific reviewer - a different model from the "
+    "system that authored this submission. Find weaknesses and unsupported "
+    "claims; do NOT validate the authors' work by default. "
+    "You are a rigorous code reviewer grading AI-generated experiment submissions "
     "against a structured rubric. Your job is to read the provided artifacts and assign a "
     "score in [0.0, 1.0] for each requested rubric leaf.\n\n"
     "Return ONLY valid JSON in exactly this schema:\n"
@@ -296,6 +299,20 @@ def _build_llm_client():
         ) from exc
 
     model = os.environ.get("ARC_JUDGE_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o"
+    # P0-3: guard against same-source grading (judge == generator).
+    _author_model = os.environ.get("ARC_AUTHOR_MODEL", "")
+    if (
+        _author_model
+        and model == _author_model
+        and os.environ.get("ARC_ALLOW_SAME_MODEL_JUDGE", "") not in ("1", "true", "yes")
+    ):
+        raise SystemExit(
+            f"ARC-Bench judge model ({model!r}) equals the generator model - "
+            "same-source grading inflates scores via self-preference. Set "
+            "ARC_JUDGE_MODEL to a different model, or ARC_ALLOW_SAME_MODEL_JUDGE=1."
+        )
+    if _author_model and model != _author_model:
+        print(f"[judge] independent grading: judge={model} author={_author_model}", flush=True)
     cfg = LLMConfig(
         base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         api_key=os.environ.get("OPENAI_API_KEY", ""),

@@ -176,6 +176,66 @@ class LLMClient:
             )
         return client
 
+    @classmethod
+    def reviewer_from_rc_config(cls, rc_config: Any) -> "LLMClient | None":
+        """Build an INDEPENDENT reviewer/judge client (P0-3).
+
+        Returns None when ``llm.reviewer_model`` is empty (callers then fall
+        back to the generator client, preserving legacy behaviour).
+
+        When only ``reviewer_model`` is set, the reviewer reuses the main
+        provider/base_url/api_key but talks to a different model. When
+        ``reviewer_provider``/``reviewer_base_url``/``reviewer_api_key(_env)``
+        are set, a fully independent provider is used. The reviewer never
+        falls back to the author model (empty ``fallback_models``) so its
+        judgement stays decoupled from the generator.
+        """
+        from researchclaw.llm import PROVIDER_PRESETS
+
+        llm = rc_config.llm
+        reviewer_model = str(getattr(llm, "reviewer_model", "") or "").strip()
+        if not reviewer_model:
+            return None
+
+        provider = (
+            str(getattr(llm, "reviewer_provider", "") or "").strip()
+            or getattr(llm, "provider", "openai")
+        )
+        preset = PROVIDER_PRESETS.get(provider, {})
+        preset_base_url = preset.get("base_url")
+
+        base_url = (
+            str(getattr(llm, "reviewer_base_url", "") or "").strip()
+            or llm.base_url
+            or preset_base_url
+            or ""
+        )
+
+        reviewer_key_env = str(getattr(llm, "reviewer_api_key_env", "") or "").strip()
+        api_key = (
+            str(getattr(llm, "reviewer_api_key", "") or "").strip()
+            or (os.environ.get(reviewer_key_env, "") if reviewer_key_env else "")
+            or str(llm.api_key or os.environ.get(llm.api_key_env, "") or "")
+        )
+
+        config = LLMConfig(
+            base_url=base_url,
+            api_key=api_key,
+            wire_api=getattr(llm, "wire_api", "chat_completions"),
+            primary_model=reviewer_model,
+            fallback_models=[],
+            timeout_sec=getattr(llm, "timeout_sec", 600),
+        )
+        client = cls(config)
+
+        if provider in ("anthropic", "kimi-anthropic"):
+            from .anthropic_adapter import AnthropicAdapter
+
+            client._anthropic = AnthropicAdapter(
+                base_url, api_key, config.timeout_sec
+            )
+        return client
+
     def chat(
         self,
         messages: list[dict[str, str]],
