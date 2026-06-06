@@ -25,10 +25,81 @@ from researchclaw.pipeline._helpers import (
     _safe_json_loads,
     _utcnow_iso,
 )
+from researchclaw.pipeline.environment import parse_manifest, resolve_environment
 from researchclaw.pipeline.stages import Stage, StageStatus
 from researchclaw.prompts import PromptManager
 
 logger = logging.getLogger(__name__)
+
+
+def _scan_cached_datasets(run_dir: Path) -> set[str]:
+    """Collect lowercased names of datasets already present on disk, so the
+    environment resolver can mark them CACHED rather than NEEDS_DOWNLOAD."""
+    tokens: set[str] = set()
+    for d in (
+        Path("/opt/datasets"),
+        Path.home() / ".cache" / "datasets",
+        run_dir / "workspace" / "data",
+        run_dir / "data",
+    ):
+        try:
+            if d.is_dir():
+                for child in d.iterdir():
+                    tokens.add(child.name.lower())
+        except OSError:
+            continue
+    return tokens
+
+
+def _resolve_plan_environment(
+    plan: Any, stage_dir: Path, run_dir: Path, config: RCConfig
+) -> bool:
+    """P1: parse the plan's environment manifest, resolve it against the real
+    runtime (report-only), and persist the resolution next to exp_plan.yaml.
+
+    Returns True if a resolution artifact was written.
+    """
+    try:
+        from researchclaw.pipeline.stage_impls._code_generation import _probe_packages
+
+        manifest = parse_manifest(plan if isinstance(plan, dict) else {})
+        installed: dict[str, bool] | None = None
+        if manifest.import_names:
+            installed = _probe_packages(
+                config.experiment.sandbox.python_path,
+                candidates=manifest.import_names,
+            )
+        resolution = resolve_environment(
+            manifest,
+            installed or {},
+            hw_profile=_load_hardware_profile(run_dir),
+            cached_datasets=_scan_cached_datasets(run_dir),
+        )
+        (stage_dir / "environment_resolution.json").write_text(
+            json.dumps(resolution.to_dict(), indent=2), encoding="utf-8"
+        )
+        (stage_dir / "environment_resolution.md").write_text(
+            resolution.summary_md(), encoding="utf-8"
+        )
+        if manifest.declared:
+            logger.info(
+                "Stage 9 environment: runnable_as_is=%s provisionable=%s "
+                "install=%s download=%s compute=%s",
+                resolution.runnable_as_is, resolution.provisionable,
+                resolution.needs_install, resolution.needs_download,
+                resolution.compute_status,
+            )
+            if not resolution.provisionable:
+                logger.warning(
+                    "Stage 9 environment INFEASIBLE on this hardware: %s",
+                    resolution.compute_detail,
+                )
+        else:
+            logger.info("Stage 9: plan declared no environment manifest")
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("Stage 9 environment resolution skipped", exc_info=True)
+        return False
 
 # Best-of-N exploration stances for the Stage 9 design tournament. Each candidate
 # plan is generated with one stance appended, giving breadth even with a single
@@ -656,9 +727,20 @@ def _execute_experiment_design(
         yaml.dump(plan, default_flow_style=False, allow_unicode=True),
         encoding="utf-8",
     )
+
+    # P1: resolve the plan's environment manifest against the real runtime so
+    # feasibility (what must be installed/downloaded, or is infeasible) is
+    # visible at the gate, before code generation.
+    _env_resolved = _resolve_plan_environment(plan, stage_dir, run_dir, config)
+
+    _artifacts = ("exp_plan.yaml",)
+    _evidence = ("stage-09/exp_plan.yaml",)
+    if _env_resolved:
+        _artifacts = _artifacts + ("environment_resolution.json",)
+        _evidence = _evidence + ("stage-09/environment_resolution.json",)
     return StageResult(
         stage=Stage.EXPERIMENT_DESIGN,
         status=StageStatus.DONE,
-        artifacts=("exp_plan.yaml",),
-        evidence_refs=("stage-09/exp_plan.yaml",),
+        artifacts=_artifacts,
+        evidence_refs=_evidence,
     )
