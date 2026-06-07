@@ -237,6 +237,21 @@ Read the files in the current workspace:
 - EXPERIMENT_PLAN.yaml — the full experiment design
 - GUIDANCE.md — topic, metric, environment constraints, domain-specific guidance
 
+ACADEMIC RIGOR IS MANDATORY (the design's real tools/data, not stand-ins):
+- The plan in EXPERIMENT_PLAN.yaml declares the REAL models, tools, libraries
+  (see its `environment` block) and datasets the experiment requires. You MUST
+  actually import and use them. The setup phase installs declared pip packages
+  and downloads declared datasets, so they ARE available — use them.
+- If the plan specifies an LLM / fine-tuning, ACTUALLY load and train it
+  (e.g. transformers + peft) — do NOT replace it with a toy torch.nn model.
+- If the plan specifies a real evaluator/oracle (e.g. a CAD kernel like
+  cadquery), ACTUALLY execute it to compute the metric — do NOT write a
+  rule-based / regex / length-check "mimic" of it.
+- NEVER fabricate or fall back to synthetic/random/dummy data unless the plan
+  EXPLICITLY designates synthetic data for this domain. If declared real data
+  cannot be loaded, RAISE an error — do not silently synthesize.
+- These substitutions will be detected and the stage will be BLOCKED.
+
 Your task:
 1. Design the file structure (main.py is the required entry point).
 2. Implement ALL files with complete, runnable code. No placeholders or TODOs.
@@ -246,8 +261,9 @@ Your task:
 5. Use multi-seed evaluation (seeds 0, 1, 2) and report mean ± std.
 6. Each ablation/condition MUST be genuinely different — not copy-paste with a renamed variable.
 7. Implement a time guard: stop gracefully at 80% of the time budget ({time_budget_sec} seconds).
-8. Write requirements.txt listing any extra pip packages needed.
-9. If the experiment needs dataset downloads, write a setup.py that handles them.
+8. Write requirements.txt listing the declared pip packages the code imports.
+9. If the experiment needs dataset downloads, write a setup.py that downloads
+   the REAL declared dataset (no synthetic fallback).
 
 IMPORTANT CONSTRAINTS:
 - The code will run in the experiment environment configured in the project config: {env_description}

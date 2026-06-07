@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+
+import yaml
 from pathlib import Path
 from typing import Any
 
@@ -1126,6 +1128,93 @@ def _execute_code_generation(
                     "files — experiment may crash on import",
                     fname, _m,
                 )
+
+    # --- P5: academic-rigor enforcement (use the REAL declared tools/data) ---
+    from researchclaw.experiment.rigor_check import check_rigor as _check_rigor
+    from researchclaw.pipeline.environment import parse_manifest as _parse_manifest
+
+    try:
+        _plan_obj = yaml.safe_load(exp_plan) if exp_plan else {}
+    except yaml.YAMLError:
+        _plan_obj = {}
+    if not isinstance(_plan_obj, dict):
+        _plan_obj = {}
+    _manifest = _parse_manifest(_plan_obj)
+
+    # A. Merge the Stage-9 manifest's pip deps into requirements.txt so the real
+    #    tools (e.g. cadquery/OCP/transformers) are actually provisioned by P2 —
+    #    do not rely on the generator to remember them.
+    if _manifest.pip:
+        _existing = files.get("requirements.txt", "")
+        _have = {
+            re.split(r"[<>=!~\[ ]", ln.strip(), 1)[0].lower()
+            for ln in _existing.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        }
+        _add = [r.spec for r in _manifest.pip if r.pip_name.lower() not in _have]
+        if _add:
+            files["requirements.txt"] = (
+                (_existing.rstrip() + "\n" if _existing.strip() else "")
+                + "\n".join(_add) + "\n"
+            )
+            logger.info("P5: merged %d manifest pip dep(s) into requirements.txt: %s",
+                        len(_add), _add)
+
+    # D. Check rigor; repair (bounded) by re-prompting the generator to use the
+    #    REAL tools; block the stage if violations remain (never ship degraded).
+    _rigor = _check_rigor(files, _plan_obj, _manifest)
+    _rigor_attempt = 0
+    while not _rigor.ok and llm is not None and _rigor_attempt < 2:
+        _rigor_attempt += 1
+        logger.warning(
+            "Stage 10 P5 rigor violations (repair %d/2): %s",
+            _rigor_attempt, _rigor.violations,
+        )
+        _ctx = "\n\n".join(
+            f"```filename:{f}\n{c}\n```" for f, c in files.items() if f.endswith(".py")
+        )
+        _user = (
+            _rigor.as_feedback()
+            + "\n\nRegenerate the COMPLETE corrected file(s). Actually import and "
+            "execute the real declared tools/models/datasets — no rule-based, "
+            "mimic, or synthetic substitutes. Output each file as a "
+            "```filename:<name>\\n<code>\\n``` block.\n\nCurrent files:\n" + _ctx
+        )
+        try:
+            resp = _chat_with_prompt(
+                llm,
+                "You are a rigorous research engineer. Never substitute rule-based "
+                "or synthetic stand-ins for the real tools the plan declares.",
+                _user,
+            )
+            _new = _extract_multi_file_blocks(resp.content)
+        except Exception:  # noqa: BLE001
+            logger.debug("P5 rigor repair attempt failed", exc_info=True)
+            break
+        for _k, _v in (_new or {}).items():
+            # Don't accept syntactically-broken replacements.
+            if _k.endswith(".py"):
+                _vc = validate_code(_v)
+                if any(i.severity == "error" and i.category == "syntax" for i in _vc.issues):
+                    logger.warning("P5: rigor-repaired %s has syntax error, keeping original", _k)
+                    continue
+            files[_k] = _v
+        _rigor = _check_rigor(files, _plan_obj, _manifest)
+
+    if not _rigor.ok:
+        (stage_dir / "RIGOR_VIOLATION.md").write_text(
+            _rigor.as_markdown(), encoding="utf-8"
+        )
+        logger.error(
+            "Stage 10: BLOCKED — academic-rigor violations remain after %d repair(s): %s",
+            _rigor_attempt, _rigor.violations,
+        )
+        return StageResult(
+            stage=Stage.CODE_GENERATION,
+            status=StageStatus.FAILED,
+            artifacts=("RIGOR_VIOLATION.md",),
+            evidence_refs=(),
+        )
 
     # --- Write experiment directory ---
     exp_dir = stage_dir / "experiment"
