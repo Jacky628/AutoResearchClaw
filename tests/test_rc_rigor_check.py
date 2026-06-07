@@ -50,6 +50,16 @@ def test_synthetic_fallback_flagged_when_not_declared():
     assert any("synthetic" in v.lower() for v in rep.violations)
 
 
+def test_synthetic_violation_names_the_offending_file():
+    files = {
+        "main.py": "import cadquery\nx=1\n",
+        "setup.py": "def generate_synthetic_deepcad_data():\n    return []\n",
+    }
+    rep = check_rigor(files, CAD_PLAN, _manifest(["cadquery"]))
+    syn = [v for v in rep.violations if "synthetic" in v.lower()]
+    assert syn and "setup.py" in syn[0]  # surgical: points at the right file
+
+
 def test_synthetic_allowed_when_plan_declares_it():
     pde_plan = {"objectives": ["solve Burgers"],
                 "datasets": [{"name": "synthetic Burgers PDE", "source": "generated"}]}

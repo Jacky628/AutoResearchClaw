@@ -134,25 +134,37 @@ def check_rigor(
                 f"execution / real model), not a rule-based or synthetic substitute."
             )
 
-    # 2. Undeclared synthetic-data fabrication / fallback.
+    # 2. Undeclared synthetic-data fabrication / fallback. Name the exact
+    #    file(s) + marker so the repair can surgically delete it.
     if not _plan_allows_synthetic(plan, manifest):
-        for marker in _SYNTHETIC_MARKERS:
-            if marker in py_low:
-                violations.append(
-                    f"Generated code fabricates data (`{marker}`) but the plan does "
-                    f"not declare synthetic data. Use the declared real dataset and "
-                    f"raise/FAIL if it cannot be obtained — do not silently synthesize."
-                )
-                break
+        for fname, hit in _locate_marker(files, _SYNTHETIC_MARKERS):
+            violations.append(
+                f"File `{fname}` fabricates data (`{hit}`) but the plan does NOT "
+                f"declare synthetic data. DELETE that function and every call to it; "
+                f"if the declared real dataset cannot be obtained, "
+                f"`raise RuntimeError(...)` — never silently synthesize."
+            )
+            break  # one is enough to block; repair message points at the file
 
     # 3. Rule-based 'mimic' stand-in for a declared real evaluator/oracle.
-    for marker in _MIMIC_MARKERS:
-        if marker in py_low:
-            violations.append(
-                f"Generated code uses a rule-based stand-in (`{marker}`) instead of "
-                f"the real evaluator the plan requires. Execute the declared real "
-                f"oracle/tool to compute the metric."
-            )
-            break
+    for fname, hit in _locate_marker(files, _MIMIC_MARKERS):
+        violations.append(
+            f"File `{fname}` uses a rule-based stand-in (`{hit}`) instead of the "
+            f"real evaluator the plan requires. DELETE it and execute the declared "
+            f"real oracle/tool (e.g. run the CAD kernel) to compute the metric."
+        )
+        break
 
     return RigorReport(violations)
+
+
+def _locate_marker(files: dict[str, str], markers: tuple[str, ...]):
+    """Yield (filename, marker) for each .py file containing any of *markers*."""
+    for fname, code in files.items():
+        if not fname.endswith(".py"):
+            continue
+        low = code.lower()
+        for marker in markers:
+            if marker in low:
+                yield fname, marker
+                break
