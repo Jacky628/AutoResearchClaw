@@ -44,6 +44,27 @@ _NO_TEMPERATURE_MODELS = frozenset(
     }
 )
 
+# Reasoning models that spend hidden reasoning tokens out of the SAME max_tokens
+# budget as the visible answer. Unlike _NEW_PARAM_MODELS (OpenAI o-series/gpt-5,
+# which need the max_completion_tokens param name), these use the standard
+# `max_tokens` param — e.g. gemini-2.5 via OpenRouter. At a low budget the
+# reasoning can consume most/all of it and leave the visible output truncated or
+# entirely empty (finish_reason=length). We floor the budget so reasoning has
+# headroom without starving the answer. Substring match so provider-prefixed ids
+# ("google/gemini-2.5-pro") are caught.
+_REASONING_MODEL_MARKERS = (
+    "gemini-2.5",
+    "gemini-2.0-flash-thinking",
+)
+_REASONING_MIN_TOKENS = 8192
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """True for models whose hidden reasoning tokens share the max_tokens budget
+    (and which use the standard max_tokens param, not max_completion_tokens)."""
+    m = (model or "").lower()
+    return any(marker in m for marker in _REASONING_MODEL_MARKERS)
+
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -308,7 +329,7 @@ class LLMClient:
         """
         is_reasoning = any(
             self.config.primary_model.startswith(p) for p in _NEW_PARAM_MODELS
-        )
+        ) or _is_reasoning_model(self.config.primary_model)
         min_tokens = 64 if is_reasoning else 1
         try:
             _ = self.chat(
@@ -482,6 +503,10 @@ class LLMClient:
                 if any(model.startswith(prefix) for prefix in _NEW_PARAM_MODELS):
                     reasoning_min = 32768
                     body["max_completion_tokens"] = max(max_tokens, reasoning_min)
+                elif _is_reasoning_model(model):
+                    # Standard max_tokens param, but floor the budget so hidden
+                    # reasoning tokens don't starve the visible answer to empty.
+                    body["max_tokens"] = max(max_tokens, _REASONING_MIN_TOKENS)
                 else:
                     body["max_tokens"] = max_tokens
 
