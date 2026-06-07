@@ -9,7 +9,9 @@ from typing import Any
 
 from researchclaw.adapters import AdapterBundle
 from researchclaw.config import RCConfig
+from researchclaw.llm import build_panel_llms, build_reviewer_llm
 from researchclaw.llm.client import LLMClient
+from researchclaw.pipeline.debate import run_debate
 from researchclaw.pipeline._helpers import (
     StageResult,
     _default_hypotheses,
@@ -111,7 +113,6 @@ def _execute_hypothesis_gen(
         if config.llm.tournament_enabled and config.llm.tournament_candidates >= 2:
             # --- Best-of-N tournament: generate N candidate hypothesis sets
             # from diverse stances, then an independent judge picks the winner.
-            from researchclaw.llm import build_panel_llms, build_reviewer_llm
             from researchclaw.pipeline.tournament import (
                 effective_candidates,
                 run_tournament,
@@ -142,21 +143,47 @@ def _execute_hypothesis_gen(
                 label="hypset",
             )
         else:
-            # --- Multi-perspective debate ---
             perspectives_dir = stage_dir / "perspectives"
-            perspectives = _multi_perspective_generate(
-                llm, _active_roles, variables, perspectives_dir
-            )
-            # BUG-S2: If all debate perspectives failed, fall back to defaults
-            # instead of sending empty context to the LLM (pure hallucination).
-            if not perspectives:
-                logger.warning("All debate perspectives failed; using default hypotheses")
-                hypotheses_md = _default_hypotheses(config.research.topic)
+            _panel = build_panel_llms(config)
+            if _panel:
+                # --- Multi-model debate: distinct models argue per role,
+                # rebuttal round(s), then an independent judge synthesizes.
+                # Mirrors Stage 14/18; makes `debate_enabled` actually drive
+                # Stage 8 generation (previously a no-op outside tournament). ---
+                _judge = build_reviewer_llm(config) or llm
+                try:
+                    hypotheses_md, _ = run_debate(
+                        _panel,
+                        _judge,
+                        _active_roles,
+                        variables,
+                        rounds=config.llm.debate_rounds,
+                        synth_prompt="hypothesis_synthesize",
+                        out_dir=perspectives_dir,
+                        prompts=_pm,
+                        author_model=getattr(llm.config, "primary_model", ""),
+                    )
+                except Exception:  # noqa: BLE001 — never block on debate
+                    logger.warning(
+                        "Multi-model debate failed; using default hypotheses",
+                        exc_info=True,
+                    )
+                    hypotheses_md = _default_hypotheses(config.research.topic)
             else:
-                # --- Synthesize into final hypotheses ---
-                hypotheses_md = _synthesize_perspectives(
-                    llm, perspectives, "hypothesis_synthesize", _pm
+                # --- Legacy multi-perspective (single model, no judge) ---
+                perspectives = _multi_perspective_generate(
+                    llm, _active_roles, variables, perspectives_dir
                 )
+                # BUG-S2: If all debate perspectives failed, fall back to defaults
+                # instead of sending empty context to the LLM (pure hallucination).
+                if not perspectives:
+                    logger.warning("All debate perspectives failed; using default hypotheses")
+                    hypotheses_md = _default_hypotheses(config.research.topic)
+                else:
+                    # --- Synthesize into final hypotheses ---
+                    hypotheses_md = _synthesize_perspectives(
+                        llm, perspectives, "hypothesis_synthesize", _pm
+                    )
     else:
         hypotheses_md = _default_hypotheses(config.research.topic)
     # --- HITL: Read human guidance if available ---
