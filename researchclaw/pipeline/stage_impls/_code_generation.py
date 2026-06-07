@@ -1004,6 +1004,23 @@ def _execute_code_generation(
             )
         }
 
+    # --- P6: security profile per file (academic-rigor-first) ---
+    # When provisioning is enabled the experiment legitimately downloads real
+    # data and runs real tools (subprocess/requests/shutil/exec); relax those
+    # bans instead of blocking the rigorous code. setup.py (the download script)
+    # gets the same relaxation. Otherwise stay strict.
+    if config.experiment.mode == "docker":
+        _provisioned = config.experiment.docker.network_policy != "none"
+    elif config.experiment.mode == "sandbox":
+        _provisioned = config.experiment.sandbox.network_policy != "none"
+    else:
+        _provisioned = False
+
+    def _sec_profile(_fname: str) -> str:
+        if _fname == "setup.py":
+            return "setup"
+        return "provisioned" if _provisioned else "strict"
+
     # --- Validate each file + auto-repair loop ---
     all_valid = True
     attempt = 0
@@ -1011,7 +1028,7 @@ def _execute_code_generation(
         # Skip non-Python files (requirements.txt, setup.py, etc.)
         if not fname.endswith(".py"):
             continue
-        validation = validate_code(code)
+        validation = validate_code(code, security_profile=_sec_profile(fname))
         repair_attempt = 0
         while not validation.ok and llm is not None and repair_attempt < max_repair:
             repair_attempt += 1
@@ -1047,7 +1064,7 @@ def _execute_code_generation(
                 files[fname] = _repaired
             else:
                 logger.warning("Repair attempt returned empty code, keeping original")
-            validation = validate_code(files[fname])
+            validation = validate_code(files[fname], security_profile=_sec_profile(fname))
         if not validation.ok:
             all_valid = False
             # BUG-14: Log remaining issues prominently
@@ -1071,7 +1088,9 @@ def _execute_code_generation(
     if not all_valid:
         _has_critical = False
         for fname, code in files.items():
-            _v = validate_code(code)
+            if not fname.endswith(".py"):
+                continue
+            _v = validate_code(code, security_profile=_sec_profile(fname))
             if not _v.ok:
                 for issue in _v.issues:
                     if issue.severity == "error" and issue.category in (
