@@ -3644,3 +3644,114 @@ class TestDebateWiring:
         )
         assert result.status == StageStatus.DONE
         assert called["debate"] is False
+
+
+class TestHypothesisGenDebateWiring:
+    """Stage 8 multi-model debate routing (decoupled from tournament).
+
+    Mirrors ``TestDebateWiring`` for Stage 14/18. Before the fix,
+    ``debate_enabled`` was a no-op for Stage 8 outside the tournament branch:
+    the non-tournament path always used the single-model
+    ``_multi_perspective_generate``. Now a non-empty panel routes to
+    ``run_debate``, while tournament still takes priority when both are on.
+    """
+
+    def test_stage8_routes_to_debate_when_panel_present(
+        self, tmp_path: Path, rc_config: RCConfig, adapters: AdapterBundle, monkeypatch
+    ) -> None:
+        import researchclaw.pipeline.stage_impls._synthesis as _syn
+
+        calls: dict[str, Any] = {}
+
+        def _fake_run_debate(panel, judge, roles, variables, **kw):
+            calls["synth_prompt"] = kw.get("synth_prompt")
+            calls["roles"] = roles
+            return "DEBATE-HYP-RESULT", {}
+
+        monkeypatch.setattr(_syn, "build_panel_llms", lambda c: [FakeLLMClientWithConfig()])
+        monkeypatch.setattr(_syn, "build_reviewer_llm", lambda c: None)
+        monkeypatch.setattr(_syn, "run_debate", _fake_run_debate)
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        stage_dir = run_dir / "stage-08"
+        stage_dir.mkdir(parents=True)
+        _write_prior_artifact(run_dir, 7, "synthesis.md", "# Synthesis\nGap found.")
+
+        result = rc_executor._execute_hypothesis_gen(
+            stage_dir, run_dir, _debate_enabled(rc_config), adapters,
+            llm=FakeLLMClientWithConfig(),
+        )
+        assert result.status == StageStatus.DONE
+        assert calls["synth_prompt"] == "hypothesis_synthesize"
+        assert "DEBATE-HYP-RESULT" in (stage_dir / "hypotheses.md").read_text()
+
+    def test_stage8_legacy_when_no_panel(
+        self, tmp_path: Path, rc_config: RCConfig, adapters: AdapterBundle, monkeypatch
+    ) -> None:
+        import researchclaw.pipeline.stage_impls._synthesis as _syn
+
+        monkeypatch.setattr(_syn, "build_panel_llms", lambda c: [])
+        called = {"debate": False}
+        monkeypatch.setattr(
+            _syn, "run_debate",
+            lambda *a, **k: called.__setitem__("debate", True) or ("X", {}),
+        )
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        stage_dir = run_dir / "stage-08"
+        stage_dir.mkdir(parents=True)
+        _write_prior_artifact(run_dir, 7, "synthesis.md", "# Synthesis\nGap found.")
+
+        result = rc_executor._execute_hypothesis_gen(
+            stage_dir, run_dir, rc_config, adapters,
+            llm=FakeLLMClient("## H1\nTest hypothesis"),
+        )
+        assert result.status == StageStatus.DONE
+        assert called["debate"] is False
+        # Legacy path writes the 3 perspective files (innovator/pragmatist/contrarian).
+        assert len(list((stage_dir / "perspectives").glob("*.md"))) == 3
+
+    def test_stage8_tournament_takes_priority_over_debate(
+        self, tmp_path: Path, rc_config: RCConfig, adapters: AdapterBundle, monkeypatch
+    ) -> None:
+        import dataclasses
+
+        import researchclaw.pipeline.stage_impls._synthesis as _syn
+        import researchclaw.pipeline.tournament as _tourney
+
+        called = {"debate": False}
+        monkeypatch.setattr(_syn, "build_panel_llms", lambda c: [FakeLLMClientWithConfig()])
+        monkeypatch.setattr(_syn, "build_reviewer_llm", lambda c: None)
+        monkeypatch.setattr(
+            _syn, "run_debate",
+            lambda *a, **k: called.__setitem__("debate", True) or ("X", {}),
+        )
+        monkeypatch.setattr(_tourney, "effective_candidates", lambda n: 2)
+        monkeypatch.setattr(_tourney, "run_tournament", lambda *a, **k: ("TOURNEY-HYP", {}))
+
+        # Both tournament AND debate enabled — tournament must win.
+        cfg = dataclasses.replace(
+            rc_config,
+            llm=dataclasses.replace(
+                rc_config.llm,
+                debate_enabled=True,
+                debate_rounds=1,
+                tournament_enabled=True,
+                tournament_candidates=2,
+            ),
+        )
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        stage_dir = run_dir / "stage-08"
+        stage_dir.mkdir(parents=True)
+        _write_prior_artifact(run_dir, 7, "synthesis.md", "# Synthesis\nGap found.")
+
+        result = rc_executor._execute_hypothesis_gen(
+            stage_dir, run_dir, cfg, adapters, llm=FakeLLMClientWithConfig(),
+        )
+        assert result.status == StageStatus.DONE
+        assert called["debate"] is False
+        assert "TOURNEY-HYP" in (stage_dir / "hypotheses.md").read_text()
