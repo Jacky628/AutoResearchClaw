@@ -122,3 +122,21 @@ def test_write_resolution_no_marker_when_feasible(tmp_path: Path) -> None:
     res = _resolve_environment_for_plan(_plan(24), rd, cfg)
     _write_environment_resolution(stage_dir, res, redesign_attempts=0)
     assert not (stage_dir / "INFEASIBLE.md").exists()
+
+
+def test_write_resolution_emits_operator_setup_for_system_libs(tmp_path: Path) -> None:
+    cfg, rd = _config(tmp_path), _run_dir(tmp_path)
+    stage_dir = tmp_path / "stage-09"; stage_dir.mkdir()
+    plan = {"objectives": ["o"], "environment": {
+        "pip": ["cadquery"],
+        "system": ["libgl1"],
+        "compute": {"gpu": "required", "min_vram_gb": 24, "gpus": 1},
+    }}
+    res = _resolve_environment_for_plan(plan, rd, cfg)
+    _write_environment_resolution(stage_dir, res, redesign_attempts=0)
+    op = stage_dir / "OPERATOR_SETUP.md"
+    assert op.exists()
+    body = op.read_text()
+    assert "sudo apt-get install -y libgl1" in body
+    # provisionable (operator-fixable) → not marked infeasible
+    assert not (stage_dir / "INFEASIBLE.md").exists()

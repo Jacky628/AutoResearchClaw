@@ -509,10 +509,14 @@ def _execute_code_generation(
     extra_guidance = ""
     _net_policy = getattr(getattr(config, "docker", None), "network_policy", "setup_only")
     if config.experiment.mode in ("sandbox", "docker"):
+        # P4: respect the real per-mode network policy. Sandbox now has its own
+        # network_policy (P2 provisioning) — do NOT hardcode "none", or codegen
+        # would be told "offline, no pip" while the setup phase actually installs
+        # requirements.txt / runs setup.py.
         _net_policy = (
             config.experiment.docker.network_policy
             if config.experiment.mode == "docker"
-            else "none"  # sandbox mode has no network
+            else config.experiment.sandbox.network_policy
         )
         if _net_policy == "none":
             # Network disabled: inject strict offline-only guidance
@@ -527,16 +531,16 @@ def _execute_code_generation(
             except Exception:  # noqa: BLE001
                 pass
         else:
-            # setup_only or pip_only — existing behavior
+            # setup_only / pip_only — a setup phase installs requirements.txt and
+            # runs setup.py (both docker AND sandbox under P2).
             try:
                 extra_guidance += _pm.block("dataset_guidance")
             except Exception:  # noqa: BLE001
                 pass
-            if config.experiment.mode == "docker":
-                try:
-                    extra_guidance += _pm.block("setup_script_guidance")
-                except Exception:  # noqa: BLE001
-                    pass
+            try:
+                extra_guidance += _pm.block("setup_script_guidance")
+            except Exception:  # noqa: BLE001
+                pass
         try:
             extra_guidance += _pm.block("hp_reporting")
         except Exception:  # noqa: BLE001

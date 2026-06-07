@@ -172,6 +172,24 @@ def _write_environment_resolution(stage_dir: Path, resolution, redesign_attempts
                 "Stage 9 STILL INFEASIBLE after %d redesign(s): %s",
                 redesign_attempts, resolution.compute_detail,
             )
+        # P4: system libraries pip cannot install — surface an explicit operator
+        # action (academic-rigor-first: keep the rigorous tool, prompt root to
+        # install its system deps, rather than degrading the design).
+        if resolution.needs_operator:
+            cmds = resolution.operator_setup_lines()
+            (stage_dir / "OPERATOR_SETUP.md").write_text(
+                "# 🔧 Operator setup required (system libraries)\n\n"
+                "The experiment uses tools whose OS-level libraries pip cannot "
+                "install. A human with root must run these BEFORE the experiment "
+                "(pip packages and dataset downloads are handled automatically):\n\n"
+                "```bash\n" + "\n".join(cmds) + "\n```\n\n"
+                "Declared system libs: " + ", ".join(resolution.needs_operator) + "\n",
+                encoding="utf-8",
+            )
+            logger.warning(
+                "Stage 9: operator must install system libs: %s",
+                ", ".join(resolution.needs_operator),
+            )
         return True
     except OSError:  # noqa: BLE001
         logger.debug("Stage 9 environment resolution write failed", exc_info=True)

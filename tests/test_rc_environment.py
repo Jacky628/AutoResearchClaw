@@ -7,9 +7,9 @@ from researchclaw.pipeline.environment import (
     COMPUTE_OK,
     COMPUTE_UNKNOWN,
     DS_CACHED,
-    DS_NEEDS_DOWNLOAD,
+    DS_WILL_DOWNLOAD,
     PKG_AVAILABLE,
-    PKG_NEEDS_INSTALL,
+    PKG_WILL_INSTALL,
     parse_manifest,
     pip_to_import,
     resolve_environment,
@@ -95,14 +95,14 @@ class TestResolveEnvironment:
                                   hw_profile={"has_gpu": True, "vram_mb": 24576, "gpu_count": 2})
         by = {p.req.pip_name: p.status for p in res.packages}
         assert by["transformers"] == PKG_AVAILABLE
-        assert by["cadquery"] == PKG_NEEDS_INSTALL
+        assert by["cadquery"] == PKG_WILL_INSTALL
         assert res.needs_install == ["cadquery"]
 
     def test_dataset_cached_vs_download(self):
         res = resolve_environment(self._manifest(), {}, cached_datasets={"deepcad"})
         assert res.datasets[0].status == DS_CACHED
         res2 = resolve_environment(self._manifest(), {}, cached_datasets=set())
-        assert res2.datasets[0].status == DS_NEEDS_DOWNLOAD
+        assert res2.datasets[0].status == DS_WILL_DOWNLOAD
         assert res2.needs_download == ["DeepCAD"]
 
     def test_compute_ok_on_sufficient_hw(self):
@@ -148,4 +148,28 @@ class TestResolveEnvironment:
                                   hw_profile={"has_gpu": True, "vram_mb": 24576, "gpu_count": 2})
         d = res.to_dict()
         assert set(d) >= {"declared", "runnable_as_is", "provisionable", "packages",
-                          "datasets", "compute", "needs_install", "needs_download"}
+                          "datasets", "compute", "needs_install", "needs_download",
+                          "needs_operator", "operator_setup"}
+
+    def test_system_libs_need_operator_not_infeasible(self):
+        # A scientifically-required tool with OS-level deps must NOT make the
+        # design infeasible — it is provisionable via an operator install.
+        m = parse_manifest({"environment": {
+            "pip": ["cadquery"],
+            "system": ["libgl1", "libglu1-mesa"],
+            "compute": {"gpu": "required", "min_vram_gb": 24},
+        }})
+        res = resolve_environment(m, {"cadquery": False},
+                                  hw_profile={"has_gpu": True, "vram_mb": 24576, "gpu_count": 2})
+        assert res.needs_operator == ["libgl1", "libglu1-mesa"]
+        assert res.provisionable is True          # operator can install → not infeasible
+        assert res.runnable_as_is is False        # but needs action first
+        cmds = res.operator_setup_lines()
+        assert cmds == ["sudo apt-get install -y libgl1", "sudo apt-get install -y libglu1-mesa"]
+
+    def test_no_system_libs_no_operator(self):
+        res = resolve_environment(self._manifest(), {"transformers": True, "peft": True, "cadquery": True},
+                                  hw_profile={"has_gpu": True, "vram_mb": 24576, "gpu_count": 2},
+                                  cached_datasets={"deepcad"})
+        assert res.needs_operator == []
+        assert res.operator_setup_lines() == []
