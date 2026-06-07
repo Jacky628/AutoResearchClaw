@@ -126,8 +126,12 @@ BANNED_MODULES: frozenset[str] = frozenset(
 # profile. (academic-rigor-first: the environment enables the rigorous
 # experiment; the human gate is the safety backstop.)
 # ---------------------------------------------------------------------------
+# Note: `signal` is NOT always-banned — it is legitimately used for the
+# time-guard ("stop at 80% of budget"). It stays banned in `strict` (via
+# BANNED_MODULES) but is allowed in provisioned/setup. ctypes (arbitrary native
+# calls), socket and the mail/ftp modules remain always-banned.
 _ALWAYS_BANNED_MODULES: frozenset[str] = frozenset(
-    {"socket", "ftplib", "smtplib", "ctypes", "signal"}
+    {"socket", "ftplib", "smtplib", "ctypes"}
 )
 _ALWAYS_DANGEROUS_CALLS: frozenset[str] = frozenset(
     {

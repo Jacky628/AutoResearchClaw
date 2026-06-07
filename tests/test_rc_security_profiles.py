@@ -29,6 +29,7 @@ RELAXABLE = [
     "import urllib.request\n",
     "exec('import cadquery as cq; cq.Workplane(\"XY\").box(1,1,1)')\n",
     "import os\nos.unlink('/tmp/x')\n",
+    "import signal\nsignal.alarm(60)\n",  # time-guard — legit, banned only in strict
 ]
 
 
