@@ -1179,6 +1179,29 @@ def _execute_code_generation(
             logger.info("P5: merged %d manifest pip dep(s) into requirements.txt: %s",
                         len(_add), _add)
 
+    # A2. Filter LOCAL modules out of requirements.txt — generators sometimes
+    #     list a local file/module (e.g. the injected `experiment_harness`, or a
+    #     sibling `models.py`) as a pip dependency. Those don't exist on PyPI, so
+    #     `pip install -r` fails for the WHOLE file → real deps (cadquery/…) never
+    #     install. Drop any requirement whose name is a generated module.
+    if "requirements.txt" in files:
+        _local_mods = {f[:-3].lower() for f in files if f.endswith(".py")}
+        _local_mods |= {"experiment_harness", "main", "setup"}
+        _kept, _dropped = [], []
+        for ln in files["requirements.txt"].splitlines():
+            s = ln.strip()
+            if not s or s.startswith("#"):
+                _kept.append(ln)
+                continue
+            name = re.split(r"[<>=!~\[ @;]", s, 1)[0].strip().lower().replace("-", "_")
+            (_dropped if name in _local_mods else _kept).append(ln)
+        if _dropped:
+            files["requirements.txt"] = "\n".join(_kept).rstrip() + "\n"
+            logger.warning(
+                "Stage 10: dropped local-module lines from requirements.txt "
+                "(not pip packages): %s", [d.strip() for d in _dropped],
+            )
+
     # D. Check rigor; repair (bounded) by re-prompting the generator to use the
     #    REAL tools; block the stage if violations remain (never ship degraded).
     _rigor = _check_rigor(files, _plan_obj, _manifest)
