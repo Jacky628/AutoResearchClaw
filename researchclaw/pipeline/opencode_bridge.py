@@ -248,9 +248,12 @@ ACADEMIC RIGOR IS MANDATORY (the design's real tools/data, not stand-ins):
   cadquery), ACTUALLY execute it to compute the metric — do NOT write a
   rule-based / regex / length-check "mimic" of it.
 - NEVER fabricate or fall back to synthetic/random/dummy data unless the plan
-  EXPLICITLY designates synthetic data for this domain. If declared real data
-  cannot be loaded, RAISE an error — do not silently synthesize.
-- These substitutions will be detected and the stage will be BLOCKED.
+  EXPLICITLY designates synthetic data for this domain. Concretely: do NOT define
+  any `generate_synthetic*` / `make_synthetic` / dummy-data function, and do NOT
+  write a `try: <load real> except: <synthesize>` fallback. If the declared real
+  dataset cannot be downloaded, `raise RuntimeError("<dataset> unavailable")` —
+  a failed run is acceptable; fabricated data is NOT.
+- These substitutions are automatically detected and the stage will be BLOCKED.
 - PREFER safe library APIs: download datasets via `datasets`/`huggingface_hub`
   (not raw `requests`); import and call tools like a CAD kernel IN-PROCESS with
   try/except for crash handling. Use `subprocess` only when process isolation is

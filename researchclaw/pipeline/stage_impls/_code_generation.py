@@ -1183,20 +1183,28 @@ def _execute_code_generation(
     #    REAL tools; block the stage if violations remain (never ship degraded).
     _rigor = _check_rigor(files, _plan_obj, _manifest)
     _rigor_attempt = 0
-    while not _rigor.ok and llm is not None and _rigor_attempt < 2:
+    _MAX_RIGOR_REPAIR = 3
+    while not _rigor.ok and llm is not None and _rigor_attempt < _MAX_RIGOR_REPAIR:
         _rigor_attempt += 1
         logger.warning(
-            "Stage 10 P5 rigor violations (repair %d/2): %s",
-            _rigor_attempt, _rigor.violations,
+            "Stage 10 P5 rigor violations (repair %d/%d): %s",
+            _rigor_attempt, _MAX_RIGOR_REPAIR, _rigor.violations,
         )
         _ctx = "\n\n".join(
             f"```filename:{f}\n{c}\n```" for f, c in files.items() if f.endswith(".py")
         )
         _user = (
             _rigor.as_feedback()
-            + "\n\nRegenerate the COMPLETE corrected file(s). Actually import and "
-            "execute the real declared tools/models/datasets — no rule-based, "
-            "mimic, or synthetic substitutes. Output each file as a "
+            + "\n\nFix EXACTLY these violations in the named files. Concretely:\n"
+            "- DELETE any synthetic/dummy data generator function (e.g. "
+            "`generate_synthetic*`) AND every call to it. If the real declared "
+            "dataset cannot be downloaded, `raise RuntimeError(\"<dataset> "
+            "unavailable\")` instead — a failed run is acceptable, fabricated data "
+            "is NOT.\n"
+            "- Replace any rule-based/`mimic` oracle with actual execution of the "
+            "declared tool (e.g. run the CAD kernel).\n"
+            "- Import and actually use every declared real library/model.\n"
+            "Return the COMPLETE corrected file(s), each as a "
             "```filename:<name>\\n<code>\\n``` block.\n\nCurrent files:\n" + _ctx
         )
         try:

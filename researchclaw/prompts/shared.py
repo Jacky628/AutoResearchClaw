@@ -281,6 +281,13 @@ _DEFAULT_BLOCKS: dict[str, str] = {
         "NEVER mix the two styles.\n\n"
         "If ALL your datasets are pre-cached (CIFAR-10/100, MNIST, FashionMNIST, "
         "STL-10, SVHN), you do NOT need setup.py — just use download=False in main.py.\n\n"
+        "ACADEMIC RIGOR — NO SYNTHETIC FALLBACK (setup.py will be rejected otherwise):\n"
+        "- setup.py MUST download the REAL declared dataset. Do NOT define or call "
+        "any `generate_synthetic*` / `make_synthetic` / dummy-data function, and do "
+        "NOT add a `try: <download> except: <synthesize>` fallback.\n"
+        "- If the real dataset cannot be downloaded, `raise RuntimeError(\"<dataset> "
+        "unavailable\")`. A failed setup is acceptable; fabricated data is NOT — it "
+        "is auto-detected and BLOCKS the stage.\n\n"
         "You may also include a `requirements.txt` file listing any additional "
         "pip packages your experiment needs beyond the pre-installed set.\n"
     ),
