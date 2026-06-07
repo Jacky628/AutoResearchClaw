@@ -251,6 +251,10 @@ ACADEMIC RIGOR IS MANDATORY (the design's real tools/data, not stand-ins):
   EXPLICITLY designates synthetic data for this domain. If declared real data
   cannot be loaded, RAISE an error — do not silently synthesize.
 - These substitutions will be detected and the stage will be BLOCKED.
+- PREFER safe library APIs: download datasets via `datasets`/`huggingface_hub`
+  (not raw `requests`); import and call tools like a CAD kernel IN-PROCESS with
+  try/except for crash handling. Use `subprocess` only when process isolation is
+  genuinely required (e.g. guarding against a native crash).
 
 Your task:
 1. Design the file structure (main.py is the required entry point).

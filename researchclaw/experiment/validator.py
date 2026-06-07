@@ -116,6 +116,47 @@ BANNED_MODULES: frozenset[str] = frozenset(
     }
 )
 
+# ---------------------------------------------------------------------------
+# P6: security profiles. The full sets above are the "strict" policy (no
+# provisioning / no network). When the experiment runs with provisioning
+# enabled (network_policy != "none"), real experiments legitimately need to
+# download datasets (requests/urllib/http/shutil), run external tools in
+# isolation (subprocess), and execute transpiled code (exec/compile e.g. a CAD
+# kernel oracle). Those are relaxed, but a high-risk core stays banned in EVERY
+# profile. (academic-rigor-first: the environment enables the rigorous
+# experiment; the human gate is the safety backstop.)
+# ---------------------------------------------------------------------------
+_ALWAYS_BANNED_MODULES: frozenset[str] = frozenset(
+    {"socket", "ftplib", "smtplib", "ctypes", "signal"}
+)
+_ALWAYS_DANGEROUS_CALLS: frozenset[str] = frozenset(
+    {
+        "os.system", "os.popen",
+        "os.exec", "os.execl", "os.execle", "os.execlp", "os.execlpe",
+        "os.execv", "os.execve", "os.execvp", "os.execvpe",
+    }
+)
+_ALWAYS_DANGEROUS_BUILTINS: frozenset[str] = frozenset({"eval", "__import__"})
+
+SECURITY_PROFILES: frozenset[str] = frozenset({"strict", "provisioned", "setup"})
+
+
+def _effective_bans(
+    profile: str,
+) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Return (banned_modules, dangerous_calls, dangerous_builtins) for *profile*.
+
+    "strict" (default) = the full hardcoded policy. "provisioned"/"setup" relax
+    download/subprocess/exec needs but keep the always-banned high-risk core.
+    """
+    if profile in ("provisioned", "setup"):
+        return (
+            _ALWAYS_BANNED_MODULES,
+            _ALWAYS_DANGEROUS_CALLS,
+            _ALWAYS_DANGEROUS_BUILTINS,
+        )
+    return BANNED_MODULES, DANGEROUS_CALLS, DANGEROUS_BUILTINS
+
 # Packages considered safe / always available in experiment sandbox.
 SAFE_STDLIB: frozenset[str] = frozenset(
     {
@@ -207,16 +248,24 @@ COMMON_SCIENCE: frozenset[str] = frozenset(
 
 
 class _SecurityVisitor(ast.NodeVisitor):
-    """Walk AST to detect dangerous calls and imports."""
+    """Walk AST to detect dangerous calls and imports (profile-aware)."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        banned_modules: frozenset[str] = BANNED_MODULES,
+        dangerous_calls: frozenset[str] = DANGEROUS_CALLS,
+        dangerous_builtins: frozenset[str] = DANGEROUS_BUILTINS,
+    ) -> None:
         self.issues: list[ValidationIssue] = []
+        self._banned_modules = banned_modules
+        self._dangerous_calls = dangerous_calls
+        self._dangerous_builtins = dangerous_builtins
 
     # -- function calls --
 
     def visit_Call(self, node: ast.Call) -> None:
         name = _resolve_call_name(node.func)
-        if name in DANGEROUS_BUILTINS:
+        if name in self._dangerous_builtins:
             self.issues.append(
                 ValidationIssue(
                     severity="error",
@@ -226,7 +275,7 @@ class _SecurityVisitor(ast.NodeVisitor):
                     col=node.col_offset,
                 )
             )
-        elif name in DANGEROUS_CALLS:
+        elif name in self._dangerous_calls:
             self.issues.append(
                 ValidationIssue(
                     severity="error",
@@ -243,7 +292,7 @@ class _SecurityVisitor(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             top = alias.name.split(".")[0]
-            if top in BANNED_MODULES:
+            if top in self._banned_modules:
                 self.issues.append(
                     ValidationIssue(
                         severity="error",
@@ -257,7 +306,7 @@ class _SecurityVisitor(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module:
             top = node.module.split(".")[0]
-            if top in BANNED_MODULES:
+            if top in self._banned_modules:
                 self.issues.append(
                     ValidationIssue(
                         severity="error",
@@ -329,15 +378,20 @@ def validate_syntax(code: str) -> CodeValidation:
     return result
 
 
-def validate_security(code: str) -> CodeValidation:
-    """Scan *code* AST for dangerous calls and imports."""
+def validate_security(code: str, profile: str = "strict") -> CodeValidation:
+    """Scan *code* AST for dangerous calls and imports under *profile*.
+
+    profile: "strict" (default, full bans) | "provisioned" | "setup" (relax
+    download/subprocess/exec, keep the always-banned high-risk core).
+    """
     result = CodeValidation()
     try:
         tree = ast.parse(code)
     except SyntaxError:
         # If can't parse, skip security — syntax check will catch it.
         return result
-    visitor = _SecurityVisitor()
+    banned_mods, danger_calls, danger_builtins = _effective_bans(profile)
+    visitor = _SecurityVisitor(banned_mods, danger_calls, danger_builtins)
     visitor.visit(tree)
     result.issues.extend(visitor.issues)
     return result
@@ -375,11 +429,12 @@ def validate_code(
     available_packages: set[str] | None = None,
     skip_security: bool = False,
     skip_imports: bool = False,
+    security_profile: str = "strict",
 ) -> CodeValidation:
     """Run all validations and return a combined :class:`CodeValidation`.
 
     1. Syntax check (always)
-    2. Security scan (unless *skip_security*)
+    2. Security scan (unless *skip_security*), under *security_profile*
     3. Import availability (unless *skip_imports*)
     """
     combined = CodeValidation()
@@ -393,7 +448,7 @@ def validate_code(
 
     # 2. Security
     if not skip_security:
-        security = validate_security(code)
+        security = validate_security(code, profile=security_profile)
         combined.issues.extend(security.issues)
 
     # 3. Import availability
