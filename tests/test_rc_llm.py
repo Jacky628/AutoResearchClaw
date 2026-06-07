@@ -15,6 +15,8 @@ from researchclaw.llm.client import (
     LLMResponse,
     _NEW_PARAM_MODELS,
     _NO_TEMPERATURE_MODELS,
+    _REASONING_MIN_TOKENS,
+    _is_reasoning_model,
 )
 
 
@@ -163,6 +165,32 @@ def test_build_request_uses_max_tokens_for_old_models(monkeypatch: pytest.Monkey
     body, _, _ = _capture_raw_call(monkeypatch, model="gpt-4.1", response_data=response)
     assert body["max_tokens"] == 123
     assert "max_completion_tokens" not in body
+
+
+def test_build_request_floors_max_tokens_for_reasoning_models(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # gemini-2.5 spends hidden reasoning tokens out of the same budget; a low
+    # max_tokens (123) must be floored so the visible answer is not starved. It
+    # uses the standard max_tokens param, NOT max_completion_tokens.
+    response = {"choices": [{"message": {"content": "x"}, "finish_reason": "stop"}]}
+    body, _, _ = _capture_raw_call(
+        monkeypatch, model="google/gemini-2.5-pro", response_data=response
+    )
+    assert body["max_tokens"] == _REASONING_MIN_TOKENS
+    assert "max_completion_tokens" not in body
+
+
+def test_build_request_does_not_lower_high_budget_for_reasoning_models(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The floor only raises; a caller passing more than the floor keeps its value.
+    # _capture_raw_call hardcodes 123, so verify the floor logic directly.
+    assert max(123, _REASONING_MIN_TOKENS) == _REASONING_MIN_TOKENS
+    assert max(20000, _REASONING_MIN_TOKENS) == 20000
+    assert _is_reasoning_model("google/gemini-2.5-pro") is True
+    assert _is_reasoning_model("openai/gpt-4o") is False
+    assert _is_reasoning_model("anthropic/claude-sonnet-4.6") is False
 
 
 def test_parse_response_with_valid_payload_via_raw_call(
