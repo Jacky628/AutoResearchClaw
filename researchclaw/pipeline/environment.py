@@ -20,12 +20,18 @@ from typing import Any, Mapping
 # -- status constants ---------------------------------------------------------
 
 PKG_AVAILABLE = "AVAILABLE"
-PKG_NEEDS_INSTALL = "NEEDS_INSTALL"
+# Not pre-installed, but pip-installable → the P2 setup phase WILL install it.
+# This is NOT a reason to degrade the design (academic-rigor-first).
+PKG_WILL_INSTALL = "WILL_INSTALL"
 
 DS_CACHED = "CACHED"
-DS_NEEDS_DOWNLOAD = "NEEDS_DOWNLOAD"
+# Not cached, but has a source → the setup phase WILL download it.
+DS_WILL_DOWNLOAD = "WILL_DOWNLOAD"
 
-SYS_DECLARED = "DECLARED"  # OS/conda libs — not reliably probeable in P1
+# OS/conda libs pip cannot install — need a human/operator with root. NOT
+# infeasible: surfaced as an explicit "run these commands" action, so the
+# scientifically-required tool is kept and the environment adapts to it.
+SYS_NEEDS_OPERATOR = "NEEDS_OPERATOR"
 
 COMPUTE_OK = "OK"
 COMPUTE_INSUFFICIENT = "INSUFFICIENT"
@@ -218,11 +224,18 @@ class EnvironmentResolution:
     # -- derived rollups ---
     @property
     def needs_install(self) -> list[str]:
-        return [p.req.spec for p in self.packages if p.status == PKG_NEEDS_INSTALL]
+        """pip packages the setup phase will auto-install."""
+        return [p.req.spec for p in self.packages if p.status == PKG_WILL_INSTALL]
 
     @property
     def needs_download(self) -> list[str]:
-        return [d.req.name for d in self.datasets if d.status == DS_NEEDS_DOWNLOAD]
+        """datasets the setup phase will auto-download."""
+        return [d.req.name for d in self.datasets if d.status == DS_WILL_DOWNLOAD]
+
+    @property
+    def needs_operator(self) -> list[str]:
+        """system libraries a human operator must install (pip cannot)."""
+        return list(self.system)
 
     @property
     def compute_infeasible(self) -> bool:
@@ -230,18 +243,34 @@ class EnvironmentResolution:
 
     @property
     def runnable_as_is(self) -> bool:
-        """True if it could run offline right now (no install/download needed)
-        and compute is not insufficient."""
+        """True if it could run offline right now — nothing to install/download,
+        no operator action, compute sufficient."""
         return (
             not self.needs_install
             and not self.needs_download
+            and not self.needs_operator
             and self.compute_status != COMPUTE_INSUFFICIENT
         )
 
     @property
     def provisionable(self) -> bool:
-        """True if everything missing is install/download-able (compute OK)."""
+        """True if the design CAN be made to run on this machine — pip installs
+        and downloads are automatic, system libs need an operator but are still
+        obtainable. Only insufficient compute makes it genuinely infeasible.
+
+        Per academic-rigor-first: needing to install a package or prompt the
+        operator is NEVER a reason to degrade the design — only truly
+        unobtainable hardware is.
+        """
         return self.compute_status != COMPUTE_INSUFFICIENT
+
+    def operator_setup_lines(self) -> list[str]:
+        """Shell commands a human/root operator should run to satisfy system-lib
+        requirements pip cannot install. Best-effort apt mapping (declared name)."""
+        lines: list[str] = []
+        for lib in self.system:
+            lines.append(f"sudo apt-get install -y {lib}")
+        return lines
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -261,6 +290,8 @@ class EnvironmentResolution:
             "compute": {"status": self.compute_status, "detail": self.compute_detail},
             "needs_install": self.needs_install,
             "needs_download": self.needs_download,
+            "needs_operator": self.needs_operator,
+            "operator_setup": self.operator_setup_lines(),
         }
 
     def summary_md(self) -> str:
@@ -273,23 +304,27 @@ class EnvironmentResolution:
         lines = ["### Environment resolution\n"]
         verdict = (
             "✅ runnable as-is (offline)" if self.runnable_as_is
-            else ("⚠️ needs provisioning" if self.provisionable
+            else ("⚙️ provisionable (auto-install/download"
+                  + ("; operator action needed for system libs" if self.needs_operator else "")
+                  + ")" if self.provisionable
                   else "❌ INFEASIBLE on this hardware")
         )
         lines.append(f"**Verdict:** {verdict}\n")
         if self.packages:
             lines.append("**Packages:**")
             for p in self.packages:
-                mark = "✓" if p.status == PKG_AVAILABLE else "✗ install"
+                mark = "✓ installed" if p.status == PKG_AVAILABLE else "⤓ auto-install"
                 lines.append(f"- `{p.req.spec}` → {mark}")
         if self.datasets:
             lines.append("\n**Datasets:**")
             for d in self.datasets:
-                mark = "✓ cached" if d.status == DS_CACHED else "↓ download"
+                mark = "✓ cached" if d.status == DS_CACHED else "↓ auto-download"
                 sz = f" (~{d.req.size_gb} GB)" if d.req.size_gb else ""
                 lines.append(f"- {d.req.name}{sz} → {mark}")
         if self.system:
-            lines.append("\n**System libs (manual review):** " + ", ".join(self.system))
+            lines.append("\n**System libs — OPERATOR must install (pip cannot):**")
+            for cmd in self.operator_setup_lines():
+                lines.append(f"- `{cmd}`")
         lines.append(f"\n**Compute:** {self.compute_status}"
                      + (f" — {self.compute_detail}" if self.compute_detail else ""))
         return "\n".join(lines) + "\n"
@@ -347,13 +382,13 @@ def resolve_environment(
     pkgs: list[PackageStatus] = []
     for req in manifest.pip:
         ok = bool(installed.get(req.import_name, False))
-        pkgs.append(PackageStatus(req, PKG_AVAILABLE if ok else PKG_NEEDS_INSTALL))
+        pkgs.append(PackageStatus(req, PKG_AVAILABLE if ok else PKG_WILL_INSTALL))
 
     dss: list[DatasetStatus] = []
     for req in manifest.datasets:
         token = req.name.lower()
         is_cached = any(token in c or c in token for c in cached) if cached else False
-        dss.append(DatasetStatus(req, DS_CACHED if is_cached else DS_NEEDS_DOWNLOAD))
+        dss.append(DatasetStatus(req, DS_CACHED if is_cached else DS_WILL_DOWNLOAD))
 
     compute_status, compute_detail = _resolve_compute(manifest.compute, hw_profile)
 
