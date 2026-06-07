@@ -194,6 +194,44 @@ def test_failed_generation_is_skipped(tmp_path):
     assert winner == "CANDIDATE from m2"
 
 
+def test_empty_candidate_is_dropped(tmp_path):
+    # A provider returning "" (or whitespace) without raising must NOT count as
+    # a candidate: it would otherwise inflate candidates_succeeded, be judged,
+    # and could win — shipping an empty artifact. Mirrors the exception-skip
+    # guard for the empty-content case (observed with some OpenRouter models).
+    class _EmptyLLM(_GenLLM):
+        def chat(self, *a, **k):
+            return SimpleNamespace(content="   \n  ")
+
+    gens = [_GenLLM("m0"), _EmptyLLM("m1"), _GenLLM("m2")]
+    judge = _JudgeLLM("judge", '{"rankings": [], "winner": 1}')
+    winner, rec = run_tournament(
+        gens, judge, _cps(3), rank_prompt="tournament_rank",
+        out_dir=tmp_path, prompts=_PromptsStub(), author_model="m0",
+    )
+    # Empty m1 dropped -> 2 real candidates (m0, m2), compacted indices 0/1.
+    assert rec["candidates_succeeded"] == 2
+    assert rec["generator_models"] == ["m0", "m2"]
+    assert winner == "CANDIDATE from m2"  # judge winner=1 -> compacted idx 1 = m2
+    # Transcripts use compacted indices; no third/empty file written.
+    assert (tmp_path / "candidate_0.md").exists()
+    assert (tmp_path / "candidate_1.md").exists()
+    assert not (tmp_path / "candidate_2.md").exists()
+
+
+def test_all_empty_candidates_raises(tmp_path):
+    class _EmptyLLM(_GenLLM):
+        def chat(self, *a, **k):
+            return SimpleNamespace(content="")
+
+    with pytest.raises(RuntimeError):
+        run_tournament(
+            [_EmptyLLM("m0"), _EmptyLLM("m1")], _JudgeLLM("judge", "{}"),
+            _cps(2), rank_prompt="tournament_rank",
+            out_dir=tmp_path, prompts=_PromptsStub(), author_model="m0",
+        )
+
+
 def test_empty_candidate_prompts_raises(tmp_path):
     with pytest.raises(ValueError):
         run_tournament(

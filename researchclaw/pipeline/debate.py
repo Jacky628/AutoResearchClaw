@@ -54,6 +54,7 @@ def run_debate(
     out_dir: Path,
     prompts: Any,
     author_model: str = "",
+    gen_max_tokens: int = 8192,
 ) -> tuple[str, dict]:
     """Run a multi-model, multi-round debate and judge it into a final text.
 
@@ -103,13 +104,25 @@ def run_debate(
             system = _render(rp["system"], variables)
             user = _render(rp["user"], variables)
             resp = role_model[name].chat(
-                [{"role": "user", "content": user}], system=system
+                [{"role": "user", "content": user}],
+                system=system,
+                max_tokens=gen_max_tokens,
             )
-            current[name] = resp.content
-            (out_dir / f"{name}.r0.md").write_text(resp.content, encoding="utf-8")
+            text = resp.content or ""
+            if not text.strip():
+                # Empty output (e.g. a reasoning model starving the answer at a
+                # low token budget) — drop this role rather than feed a blank
+                # opening statement into the rebuttal/synthesis.
+                logger.warning(
+                    "Debate r0 role=%s model=%s returned empty — dropped",
+                    name, _model_name(role_model[name]),
+                )
+                continue
+            current[name] = text
+            (out_dir / f"{name}.r0.md").write_text(text, encoding="utf-8")
             logger.info(
                 "Debate r0 role=%s model=%s (%d chars)",
-                name, _model_name(role_model[name]), len(resp.content),
+                name, _model_name(role_model[name]), len(text),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Debate r0 role=%s failed: %s", name, exc)
@@ -133,11 +146,22 @@ def run_debate(
                     others=others,
                 )
                 resp = role_model[name].chat(
-                    [{"role": "user", "content": sp.user}], system=sp.system
+                    [{"role": "user", "content": sp.user}],
+                    system=sp.system,
+                    max_tokens=gen_max_tokens,
                 )
-                current[name] = resp.content
+                text = resp.content or ""
+                if not text.strip():
+                    # Keep the prior round's non-empty position rather than
+                    # overwriting it with a blank rebuttal.
+                    logger.warning(
+                        "Debate r%d role=%s returned empty — keeping prior turn",
+                        r, name,
+                    )
+                    continue
+                current[name] = text
                 (out_dir / f"{name}.r{r}.md").write_text(
-                    resp.content, encoding="utf-8"
+                    text, encoding="utf-8"
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Debate r%d role=%s failed: %s", r, name, exc)

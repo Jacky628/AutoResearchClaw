@@ -98,6 +98,7 @@ def run_tournament(
     prompts: Any,
     author_model: str = "",
     label: str = "candidate",
+    gen_max_tokens: int = 8192,
 ) -> tuple[str, dict]:
     """Generate N candidates, judge-rank them, return the winning text.
 
@@ -131,22 +132,45 @@ def run_tournament(
         logger.info("ARC_ABL_DISABLE_TOURNAMENT=1 — tournament collapsed to 1 candidate")
 
     # --- Generate candidates ---
+    # Only non-empty generations become real candidates. An empty/blank response
+    # (e.g. a provider returning "" without raising — observed with some
+    # OpenRouter models) must NOT count as a candidate: otherwise it inflates
+    # candidates_succeeded, gets fed to the judge (which can hallucinate a score
+    # for non-existent content), and could even "win" — shipping an empty
+    # artifact downstream. Compacted indices keep judge_verdict "Candidate K"
+    # aligned with the {label}_K.md transcript.
     candidates: list[str] = []
     cand_models: list[str] = []
     for i, (system, user) in enumerate(candidate_prompts):
         gen = generators[i % len(generators)]
+        model = _model_name(gen)
         try:
-            resp = gen.chat([{"role": "user", "content": user}], system=system)
-            text = resp.content
-            candidates.append(text)
-            cand_models.append(_model_name(gen))
-            (out_dir / f"{label}_{i}.md").write_text(text, encoding="utf-8")
-            logger.info(
-                "Tournament candidate=%d model=%s (%d chars)",
-                i, _model_name(gen), len(text),
+            # Generous budget: reasoning models (e.g. gemini-2.5-pro) spend part
+            # of max_tokens on hidden reasoning tokens that share the budget with
+            # the visible output — at the 4096 default, long prompts can starve
+            # the answer to empty/truncated. See gen_max_tokens.
+            resp = gen.chat(
+                [{"role": "user", "content": user}],
+                system=system,
+                max_tokens=gen_max_tokens,
             )
+            text = resp.content or ""
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Tournament candidate=%d failed: %s", i, exc)
+            logger.warning("Tournament candidate (attempt %d, model=%s) failed: %s", i, model, exc)
+            continue
+        if not text.strip():
+            logger.warning(
+                "Tournament candidate (attempt %d, model=%s) returned empty output — dropped",
+                i, model,
+            )
+            continue
+        kept = len(candidates)
+        candidates.append(text)
+        cand_models.append(model)
+        (out_dir / f"{label}_{kept}.md").write_text(text, encoding="utf-8")
+        logger.info(
+            "Tournament candidate=%d model=%s (%d chars)", kept, model, len(text),
+        )
 
     if not candidates:
         raise RuntimeError("tournament produced no candidates")
