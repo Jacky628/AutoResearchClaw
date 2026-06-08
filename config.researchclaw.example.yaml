@@ -58,8 +58,23 @@ llm:
   reviewer_api_key: ""        # inline key (optional; prefer the env var)
   # --- Multi-model debate engine (Stage 8 / 14 / 18), opt-in ---
   # Reuses primary_model + reviewer_model + fallback_models (deduped) as a debate
-  # panel: distinct models argue per role, 1 rebuttal round, then an independent
-  # judge (reviewer_model) scores + synthesizes. Multiplies calls per debate stage.
+  # panel: distinct models argue per role (round-robin), `debate_rounds` rebuttal
+  # round(s), then the independent reviewer_model SCORES + RANKS the perspectives
+  # and the stronger primary_model SYNTHESIZES the final text from that ranking
+  # (Stage 8/14). Stage 18 peer review keeps the reviewer synthesizing — author
+  # independence is the point there. Multiplies calls per debate stage.
+  #
+  # To enable debate for Stage 8 hypothesis generation, set:
+  #   debate_enabled: true        # required; otherwise the panel is empty and
+  #                               #   Stage 8 falls back to a single model
+  #   tournament_enabled: false   # required: on Stage 8 the tournament path takes
+  #                               #   priority, so leave it OFF to use debate
+  #   debate_rounds: 1            # rebuttal rounds (0 = opening statements only)
+  # and make the panel genuinely multi-model: primary_model + reviewer_model +
+  # fallback_models must dedupe to >= 2 distinct models (e.g. claude + gpt-4o +
+  # gemini-2.5-pro -> innovator / pragmatist / contrarian). reviewer_model should
+  # differ from primary_model so the judge is independent. Env overrides:
+  # ARC_DEBATE_ROUNDS, ARC_ABL_DISABLE_DEBATE=1 (collapse to a single role).
   # debate_enabled: false
   # debate_rounds: 1
   # --- Best-of-N tournament selection (Stage 8 hypotheses / Stage 9 design), opt-in ---
