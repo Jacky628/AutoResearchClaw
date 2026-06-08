@@ -623,6 +623,7 @@ def _execute_result_analysis(
                 out_dir=stage_dir / "perspectives",
                 prompts=_pm,
                 author_model=getattr(llm.config, "primary_model", ""),
+                synthesizer=llm,
             )
         else:
             # --- Legacy multi-perspective (single model, one shot, no judge) ---

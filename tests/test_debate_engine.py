@@ -152,6 +152,47 @@ def test_single_model_panel_degrades(tmp_path: Path):
     assert rec["independent_judge"] is False
 
 
+def test_split_judge_and_synthesizer(tmp_path: Path):
+    # When a distinct synthesizer is given, scoring and synthesis split: the
+    # independent judge only scores/ranks, the synthesizer writes the final text.
+    panel = [_RecLLM("A"), _RecLLM("B"), _RecLLM("C")]
+    judge = _RecLLM("JUDGE")
+    synth = _RecLLM("SYNTH")
+    final, rec = run_debate(
+        panel, judge, _ROLES, {"topic": "T"},
+        rounds=0, synth_prompt="hypothesis_synthesize",
+        out_dir=tmp_path, prompts=_PromptsStub(), author_model="A",
+        synthesizer=synth,
+    )
+    # Final text comes from the synthesizer, not the judge.
+    assert "SYNTH" in final
+    assert "JUDGE" not in final
+    # Judge was called exactly once (scoring), synthesizer once (synthesis).
+    assert len(judge.calls) == 1
+    assert len(synth.calls) == 1
+    # The judge's ranking is fed into the synthesizer's input.
+    assert "Independent reviewer assessment" in synth.calls[0]["user"]
+    assert rec["split_judge_synthesis"] is True
+    assert rec["judge_model"] == "JUDGE"
+    assert rec["synthesizer_model"] == "SYNTH"
+    assert (tmp_path / "debate_scores.md").exists()
+
+
+def test_no_split_when_synthesizer_is_judge(tmp_path: Path):
+    # synthesizer omitted -> judge does score+synthesis in one call (legacy).
+    panel = [_RecLLM("A"), _RecLLM("B"), _RecLLM("C")]
+    judge = _RecLLM("JUDGE")
+    final, rec = run_debate(
+        panel, judge, _ROLES, {"topic": "T"},
+        rounds=0, synth_prompt="hypothesis_synthesize",
+        out_dir=tmp_path, prompts=_PromptsStub(), author_model="A",
+    )
+    assert "JUDGE" in final
+    assert len(judge.calls) == 1
+    assert rec["split_judge_synthesis"] is False
+    assert not (tmp_path / "debate_scores.md").exists()
+
+
 def test_empty_panel_raises(tmp_path: Path):
     with pytest.raises(ValueError):
         run_debate([], None, _ROLES, {}, rounds=0,

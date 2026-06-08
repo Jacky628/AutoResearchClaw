@@ -55,14 +55,22 @@ def run_debate(
     prompts: Any,
     author_model: str = "",
     gen_max_tokens: int = 8192,
+    synthesizer: Any = None,
 ) -> tuple[str, dict]:
     """Run a multi-model, multi-round debate and judge it into a final text.
 
     Args:
         panel: list of LLM clients (each exposes ``.chat`` and ``.config``).
             Empty list is not allowed — callers must pass at least one client.
-        judge: independent judge client (scores + synthesizes). Falls back to
-            ``panel[0]`` if None.
+        judge: independent judge client (scores/ranks the perspectives). Falls
+            back to ``panel[0]`` if None.
+        synthesizer: client that writes the final synthesis. When None (or the
+            same object as the judge) the judge does scoring AND synthesis in one
+            call (legacy). When a distinct client is given, scoring and synthesis
+            are split: the independent ``judge`` scores/ranks (anti
+            self-preference) and the (stronger) ``synthesizer`` writes the final
+            text, anchored to that ranking — keeps the judge independent while
+            letting the strong model produce concrete, falsifiable output.
         roles: ``{role_name: {"system": ..., "user": ...}}`` (domain bank).
         variables: template variables for ``_render``.
         rounds: number of rebuttal rounds after the opening statements.
@@ -169,28 +177,82 @@ def run_debate(
     if not current:
         raise RuntimeError("debate produced no perspectives")
 
-    # --- Judge: score + rank + synthesize ---
+    # --- Judge + synthesize ---
     judge_client = judge or panel[0]
     judge_model = _model_name(judge_client)
+    synth_client = synthesizer or judge_client
+    synth_model = _model_name(synth_client)
+    split = synth_client is not judge_client
     parts = [f"### Perspective: {name}\n{text}" for name, text in current.items()]
     combined = "\n\n---\n\n".join(parts)
     sp = prompts.sub_prompt(synth_prompt, perspectives=combined)
-    judge_system = (
-        "You are an INDEPENDENT judge, distinct from the debating models. "
-        "First score each perspective 1-10 for rigor and evidence, rank them, "
-        "then synthesize — take the strongest elements and preserve genuine "
-        "disagreements.\n\n"
-    ) + sp.system
+    synth_max = sp.max_tokens or gen_max_tokens
     final_text = ""
-    try:
-        kwargs: dict[str, Any] = {"system": judge_system}
-        if sp.max_tokens:
-            kwargs["max_tokens"] = sp.max_tokens
-        resp = judge_client.chat([{"role": "user", "content": sp.user}], **kwargs)
-        final_text = resp.content
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Debate judge failed: %s — falling back to concatenation", exc)
-        final_text = combined
+
+    if not split:
+        # Legacy single call: the judge scores, ranks, and synthesizes at once.
+        judge_system = (
+            "You are an INDEPENDENT judge, distinct from the debating models. "
+            "First score each perspective 1-10 for rigor and evidence, rank them, "
+            "then synthesize — take the strongest elements and preserve genuine "
+            "disagreements.\n\n"
+        ) + sp.system
+        try:
+            resp = judge_client.chat(
+                [{"role": "user", "content": sp.user}],
+                system=judge_system,
+                max_tokens=synth_max,
+            )
+            final_text = resp.content
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Debate judge failed: %s — falling back to concatenation", exc)
+            final_text = combined
+    else:
+        # Split: independent judge scores/ranks (anti self-preference), then the
+        # stronger synthesizer writes the final text anchored to that ranking.
+        # The judge no longer synthesizes, so a weak judge can't flatten the
+        # output into vague consensus; the strong model owns concreteness.
+        ranking = ""
+        try:
+            score_resp = judge_client.chat(
+                [{"role": "user", "content": (
+                    f"Perspectives under debate:\n\n{combined}\n\n"
+                    "Score each perspective 1-10 for rigor, evidence, and "
+                    "falsifiability, then rank them best-first with a one-line "
+                    "reason each. Be concise."
+                )}],
+                system=(
+                    "You are an INDEPENDENT judge, distinct from the debating "
+                    "models. Evaluate only — do not rewrite or merge them."
+                ),
+                max_tokens=gen_max_tokens,
+            )
+            ranking = score_resp.content or ""
+            (out_dir / "debate_scores.md").write_text(ranking, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Debate scoring failed: %s — synthesizing without ranking", exc)
+
+        synth_input = (
+            f"## Independent reviewer assessment (scores + ranking)\n{ranking}\n\n"
+            f"---\n\n{combined}"
+        ) if ranking.strip() else combined
+        sp2 = prompts.sub_prompt(synth_prompt, perspectives=synth_input)
+        synth_system = (
+            "Synthesize this debate into the strongest possible final position. "
+            "Take the strongest elements, preserve genuine disagreements, and make "
+            "every claim concrete and falsifiable with measurable predictions and "
+            "explicit thresholds.\n\n"
+        ) + sp2.system
+        try:
+            resp = synth_client.chat(
+                [{"role": "user", "content": sp2.user}],
+                system=synth_system,
+                max_tokens=sp2.max_tokens or gen_max_tokens,
+            )
+            final_text = resp.content or combined
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Debate synthesis failed: %s — falling back to concatenation", exc)
+            final_text = combined
 
     record = {
         "panel_models": [_model_name(c) for c in panel],
@@ -198,6 +260,8 @@ def run_debate(
         "rounds": rounds,
         "author_model": author_model,
         "judge_model": judge_model,
+        "synthesizer_model": synth_model,
+        "split_judge_synthesis": split,
         "independent_judge": bool(judge_model and judge_model != author_model),
         "perspectives_succeeded": sorted(current.keys()),
     }

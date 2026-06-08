@@ -162,6 +162,7 @@ def _execute_hypothesis_gen(
                         out_dir=perspectives_dir,
                         prompts=_pm,
                         author_model=getattr(llm.config, "primary_model", ""),
+                        synthesizer=llm,
                     )
                 except Exception:  # noqa: BLE001 — never block on debate
                     logger.warning(
