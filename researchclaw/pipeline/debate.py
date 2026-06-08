@@ -6,7 +6,9 @@ debate:
   1. multiple *models* each play a distinct role (round-robin over the panel),
   2. an optional rebuttal round where every role sees the others' prior turn and
      pushes back, and
-  3. an independent judge that scores, ranks, and synthesizes the final output.
+  3. an independent judge that scores and ranks the perspectives; the final text
+     is then synthesized either by that judge (legacy) or, when a distinct
+     ``synthesizer`` is given, by the stronger model anchored to the ranking.
 
 Opt-in: callers only route here when ``build_panel_llms(config)`` returns a
 non-empty panel (i.e. ``llm.debate_enabled`` is set). When the panel has a single
@@ -113,7 +115,8 @@ def run_debate(
         author_model: generator model name, for provenance.
 
     Returns:
-        ``(final_text, record_dict)``. ``final_text`` is the judge's synthesis;
+        ``(final_text, record_dict)``. ``final_text`` is the synthesis produced
+        by the ``synthesizer`` (or the judge, in the legacy single-call path);
         ``record_dict`` is also written to ``out_dir/debate_record.json``.
     """
     from researchclaw.prompts import _render  # local import: avoid cycles
