@@ -32,6 +32,38 @@ def _model_name(client: Any) -> str:
     return getattr(getattr(client, "config", None), "primary_model", "") or "unknown"
 
 
+def _chat_with_retry(
+    client: Any,
+    user: str,
+    system: str,
+    max_tokens: int,
+    *,
+    label: str,
+    attempts: int = 2,
+) -> str:
+    """One debate turn with a one-shot retry; returns content or "" (never raises).
+
+    A panel role's transient failure (an exception, or an empty body — e.g. a
+    reasoning model occasionally starving the answer) would otherwise drop that
+    whole perspective from the debate. Retrying once recovers the common
+    transient case before the caller falls back to dropping the role.
+    """
+    for k in range(attempts):
+        try:
+            resp = client.chat(
+                [{"role": "user", "content": user}],
+                system=system,
+                max_tokens=max_tokens,
+            )
+            text = resp.content or ""
+            if text.strip():
+                return text
+            logger.warning("Debate %s: empty output (attempt %d/%d)", label, k + 1, attempts)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Debate %s: chat failed (attempt %d/%d): %s", label, k + 1, attempts, exc)
+    return ""
+
+
 def _resolve_rounds(config_rounds: int) -> int:
     """Effective rebuttal rounds, honoring the ARC_DEBATE_ROUNDS override."""
     env = os.environ.get("ARC_DEBATE_ROUNDS", "").strip()
@@ -108,32 +140,25 @@ def run_debate(
     current: dict[str, str] = {}
     for name in role_names:
         rp = roles[name]
-        try:
-            system = _render(rp["system"], variables)
-            user = _render(rp["user"], variables)
-            resp = role_model[name].chat(
-                [{"role": "user", "content": user}],
-                system=system,
-                max_tokens=gen_max_tokens,
+        system = _render(rp["system"], variables)
+        user = _render(rp["user"], variables)
+        text = _chat_with_retry(
+            role_model[name], user, system, gen_max_tokens, label=f"r0 role={name}",
+        )
+        if not text.strip():
+            # Empty/failed after retry — drop this role rather than feed a blank
+            # opening statement into the rebuttal/synthesis.
+            logger.warning(
+                "Debate r0 role=%s model=%s empty after retries — dropped",
+                name, _model_name(role_model[name]),
             )
-            text = resp.content or ""
-            if not text.strip():
-                # Empty output (e.g. a reasoning model starving the answer at a
-                # low token budget) — drop this role rather than feed a blank
-                # opening statement into the rebuttal/synthesis.
-                logger.warning(
-                    "Debate r0 role=%s model=%s returned empty — dropped",
-                    name, _model_name(role_model[name]),
-                )
-                continue
-            current[name] = text
-            (out_dir / f"{name}.r0.md").write_text(text, encoding="utf-8")
-            logger.info(
-                "Debate r0 role=%s model=%s (%d chars)",
-                name, _model_name(role_model[name]), len(text),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Debate r0 role=%s failed: %s", name, exc)
+            continue
+        current[name] = text
+        (out_dir / f"{name}.r0.md").write_text(text, encoding="utf-8")
+        logger.info(
+            "Debate r0 role=%s model=%s (%d chars)",
+            name, _model_name(role_model[name]), len(text),
+        )
 
     # --- Rebuttal rounds (each role sees the others' latest turn) ---
     for r in range(1, rounds + 1):
@@ -146,33 +171,26 @@ def run_debate(
             others = "\n\n---\n\n".join(
                 f"### {other}\n{prev[other]}" for other in prev if other != name
             )
-            try:
-                sp = prompts.sub_prompt(
-                    "debate_rebuttal",
-                    role=name,
-                    own_position=prev.get(name, ""),
-                    others=others,
+            sp = prompts.sub_prompt(
+                "debate_rebuttal",
+                role=name,
+                own_position=prev.get(name, ""),
+                others=others,
+            )
+            text = _chat_with_retry(
+                role_model[name], sp.user, sp.system, gen_max_tokens,
+                label=f"r{r} role={name}",
+            )
+            if not text.strip():
+                # Keep the prior round's non-empty position rather than
+                # overwriting it with a blank rebuttal.
+                logger.warning(
+                    "Debate r%d role=%s empty after retries — keeping prior turn",
+                    r, name,
                 )
-                resp = role_model[name].chat(
-                    [{"role": "user", "content": sp.user}],
-                    system=sp.system,
-                    max_tokens=gen_max_tokens,
-                )
-                text = resp.content or ""
-                if not text.strip():
-                    # Keep the prior round's non-empty position rather than
-                    # overwriting it with a blank rebuttal.
-                    logger.warning(
-                        "Debate r%d role=%s returned empty — keeping prior turn",
-                        r, name,
-                    )
-                    continue
-                current[name] = text
-                (out_dir / f"{name}.r{r}.md").write_text(
-                    text, encoding="utf-8"
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Debate r%d role=%s failed: %s", r, name, exc)
+                continue
+            current[name] = text
+            (out_dir / f"{name}.r{r}.md").write_text(text, encoding="utf-8")
 
     if not current:
         raise RuntimeError("debate produced no perspectives")

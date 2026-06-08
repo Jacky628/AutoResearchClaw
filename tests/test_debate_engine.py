@@ -193,6 +193,52 @@ def test_no_split_when_synthesizer_is_judge(tmp_path: Path):
     assert not (tmp_path / "debate_scores.md").exists()
 
 
+def test_opening_retries_transient_failure(tmp_path: Path):
+    # A role whose first opening call returns empty (transient) is retried once
+    # and recovered, rather than being dropped from the debate.
+    class _FlakyLLM(_RecLLM):
+        def __init__(self, model: str) -> None:
+            super().__init__(model)
+            self._n = 0
+
+        def chat(self, messages, *, system=None, max_tokens=None, **kw):
+            self.calls.append({"system": system, "user": messages[-1]["content"]})
+            self._n += 1
+            content = "" if self._n == 1 else f"[{self.config.primary_model}] recovered"
+            return SimpleNamespace(content=content)
+
+    flaky = _FlakyLLM("C")
+    panel = [_RecLLM("A"), _RecLLM("B"), flaky]
+    final, rec = run_debate(
+        panel, _RecLLM("J"), _ROLES, {"topic": "T"},
+        rounds=0, synth_prompt="hypothesis_synthesize",
+        out_dir=tmp_path, prompts=_PromptsStub(), author_model="A",
+    )
+    # Retried once (2 calls), recovered, and kept in the debate.
+    assert flaky._n == 2
+    assert "contrarian" in rec["perspectives_succeeded"]
+    assert (tmp_path / "contrarian.r0.md").exists()
+
+
+def test_opening_dropped_after_retry_exhausted(tmp_path: Path):
+    # A role that returns empty on every attempt is dropped after the retry.
+    class _AlwaysEmpty(_RecLLM):
+        def chat(self, messages, *, system=None, max_tokens=None, **kw):
+            self.calls.append({"system": system, "user": messages[-1]["content"]})
+            return SimpleNamespace(content="")
+
+    dead = _AlwaysEmpty("C")
+    panel = [_RecLLM("A"), _RecLLM("B"), dead]
+    _, rec = run_debate(
+        panel, _RecLLM("J"), _ROLES, {"topic": "T"},
+        rounds=0, synth_prompt="hypothesis_synthesize",
+        out_dir=tmp_path, prompts=_PromptsStub(), author_model="A",
+    )
+    assert len(dead.calls) == 2  # tried twice, then gave up
+    assert "contrarian" not in rec["perspectives_succeeded"]
+    assert not (tmp_path / "contrarian.r0.md").exists()
+
+
 def test_empty_panel_raises(tmp_path: Path):
     with pytest.raises(ValueError):
         run_debate([], None, _ROLES, {}, rounds=0,
