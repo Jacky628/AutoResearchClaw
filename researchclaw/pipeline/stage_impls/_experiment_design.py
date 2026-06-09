@@ -144,16 +144,36 @@ def _feasibility_redesign(
     return plan, resolution, attempts
 
 
-def _write_environment_resolution(stage_dir: Path, resolution, redesign_attempts: int) -> bool:
+def _write_environment_resolution(
+    stage_dir: Path, resolution, redesign_attempts: int,
+    dataset_verdicts: dict | None = None,
+) -> bool:
     """Persist the resolution artifacts. Returns True on success."""
     if resolution is None:
         return False
     try:
         data = resolution.to_dict()
         data["redesign_attempts"] = redesign_attempts
+        if dataset_verdicts:
+            data["dataset_verification"] = dataset_verdicts
         (stage_dir / "environment_resolution.json").write_text(
             json.dumps(data, indent=2), encoding="utf-8"
         )
+        # P8: datasets whose source could not be verified as real → gate-visible.
+        _missing = {n: v for n, v in (dataset_verdicts or {}).items()
+                    if v.get("status") == "MISSING"}
+        if _missing:
+            lines = ["# ⛔ Dataset source(s) NOT FOUND (could be invented ids)\n",
+                     "These declared datasets do not exist as a real public source. "
+                     "The experiment will fail at download — fix the source or approve "
+                     "a real alternative:\n"]
+            for n, v in _missing.items():
+                cands = ", ".join(c["id"] for c in v.get("candidates", [])[:6]) or "(none found)"
+                lines.append(f"- `{n}` → source `{v.get('source','')}` NOT FOUND. "
+                             f"Real candidates: {cands}")
+            (stage_dir / "DATASET_UNVERIFIED.md").write_text("\n".join(lines) + "\n",
+                                                             encoding="utf-8")
+            logger.warning("Stage 9: dataset source(s) NOT FOUND: %s", list(_missing))
         (stage_dir / "environment_resolution.md").write_text(
             resolution.summary_md(), encoding="utf-8"
         )
@@ -194,6 +214,86 @@ def _write_environment_resolution(stage_dir: Path, resolution, redesign_attempts
     except OSError:  # noqa: BLE001
         logger.debug("Stage 9 environment resolution write failed", exc_info=True)
         return False
+
+
+# P8: max automatic redesign passes when a declared dataset source is not real.
+_MAX_DATASET_REDESIGN = 2
+
+
+def _verify_plan_datasets(plan: Any, *, online: bool = True) -> dict:
+    """Verify each declared dataset source against HuggingFace (fail-soft)."""
+    try:
+        from researchclaw.pipeline.dataset_verify import verify_manifest_datasets
+        from researchclaw.pipeline.environment import parse_manifest as _pm
+        return verify_manifest_datasets(
+            _pm(plan if isinstance(plan, dict) else {}), online=online
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Stage 9 dataset verification skipped", exc_info=True)
+        return {}
+
+
+def _dataset_redesign_prompt(plan: Any, missing: list[tuple]) -> str:
+    lines = ["One or more declared datasets do NOT exist as a real public source:"]
+    for name, source, cands in missing:
+        c = ", ".join(
+            f"{x['id']} (downloads={x['downloads']}{', gated' if x.get('gated') else ''})"
+            for x in cands[:6]
+        ) or "(no public candidates found)"
+        lines.append(f"- `{name}` source `{source}` → NOT FOUND. Real candidates: {c}")
+    lines.append(
+        "\nReplace each NOT-FOUND dataset's source with a REAL, verifiable one from "
+        "the candidates above that best fits the research intent (prefer non-gated, "
+        "with downloadable files). Update BOTH the top-level `datasets[].source` and "
+        "`environment.datasets[].source`. Keep everything else. Re-emit the COMPLETE "
+        "YAML plan. Return ONLY the YAML."
+    )
+    return (
+        f"Current plan:\n```yaml\n"
+        f"{yaml.dump(plan, default_flow_style=False, allow_unicode=True)}\n```\n\n"
+        + "\n".join(lines)
+    )
+
+
+def _dataset_source_redesign(
+    plan: Any, run_dir: Path, config: RCConfig, llm: LLMClient | None,
+    *, max_attempts: int = _MAX_DATASET_REDESIGN,
+):
+    """P8: if a declared dataset id is MISSING (e.g. invented), re-prompt the
+    design LLM with real HF candidates so it re-picks a genuine source.
+
+    Returns (plan, verdicts, attempts). Bounded; if it stays MISSING the
+    verdicts drive a gate-visible DATASET_UNVERIFIED.md (never silently proceeds).
+    """
+    verdicts = _verify_plan_datasets(plan)
+    attempts = 0
+    while llm is not None and attempts < max_attempts:
+        missing = [
+            (n, v.get("source", ""), v.get("candidates", []))
+            for n, v in verdicts.items() if v.get("status") == "MISSING"
+        ]
+        if not missing or not any(c for _, _, c in missing):
+            break  # nothing missing, or no real candidates to suggest
+        attempts += 1
+        logger.warning(
+            "Stage 9 dataset(s) NOT FOUND (redesign %d/%d): %s",
+            attempts, max_attempts, [m[0] for m in missing],
+        )
+        try:
+            resp = llm.chat(
+                [{"role": "user", "content": _dataset_redesign_prompt(plan, missing)}],
+                max_tokens=8000,
+            )
+            parsed = _unwrap_plan_dict(yaml.safe_load(_extract_yaml_block(resp.content)))
+            if not isinstance(parsed, dict):
+                break
+            plan = parsed
+        except Exception:  # noqa: BLE001
+            logger.debug("Stage 9 dataset redesign attempt failed", exc_info=True)
+            break
+        verdicts = _verify_plan_datasets(plan)
+    return plan, verdicts, attempts
+
 
 # Best-of-N exploration stances for the Stage 9 design tournament. Each candidate
 # plan is generated with one stance appended, giving breadth even with a single
@@ -826,11 +926,20 @@ def _execute_experiment_design(
         plan, _resolution, run_dir, config, llm
     )
 
+    # P8: verify declared dataset sources are REAL (HF metadata, fail-soft); if a
+    # source is invented/missing, re-prompt with real candidates so the design
+    # re-picks a genuine one. Re-resolve so the written resolution is consistent.
+    plan, _ds_verdicts, _ds_n = _dataset_source_redesign(plan, run_dir, config, llm)
+    if _ds_n:  # plan changed → refresh feasibility resolution
+        _resolution = _resolve_environment_for_plan(plan, run_dir, config) or _resolution
+
     (stage_dir / "exp_plan.yaml").write_text(
         yaml.dump(plan, default_flow_style=False, allow_unicode=True),
         encoding="utf-8",
     )
-    _env_resolved = _write_environment_resolution(stage_dir, _resolution, _redesign_n)
+    _env_resolved = _write_environment_resolution(
+        stage_dir, _resolution, _redesign_n, dataset_verdicts=_ds_verdicts
+    )
 
     _artifacts = ("exp_plan.yaml",)
     _evidence = ("stage-09/exp_plan.yaml",)
