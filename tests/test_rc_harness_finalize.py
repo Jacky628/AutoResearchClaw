@@ -13,7 +13,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from researchclaw.experiment.harness_template import ExperimentHarness
+
+
+@pytest.fixture(autouse=True)
+def _no_real_atexit(monkeypatch):
+    """Stop harness instances created in tests from registering a REAL atexit
+    hook, which would otherwise fire at pytest shutdown and write results.json
+    into the repo root. Tests that assert registration override this locally."""
+    import researchclaw.experiment.harness_template as h
+    monkeypatch.setattr(h.atexit, "register", lambda *a, **k: None)
 
 
 def _read_results(d: Path) -> dict:
