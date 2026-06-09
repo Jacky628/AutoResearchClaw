@@ -583,11 +583,22 @@ def _execute_quality_gate(
             _INDEPENDENT_REVIEWER_PREFIX + sp.system,
             sp.user,
             json_mode=sp.json_mode,
-            max_tokens=sp.max_tokens,
+            max_tokens=sp.max_tokens or 6000,
         )
         parsed = _safe_json_loads(resp.content, {})
-        if isinstance(parsed, dict):
+        if isinstance(parsed, dict) and parsed:
             report = parsed
+        else:
+            # Empty {} → the json_mode response did not parse (commonly a
+            # truncated, unclosed ```json fence). {} is a dict so the
+            # `report is None` guard below would NOT fire — handle it here so we
+            # fall back to the default report and surface the truncation.
+            logger.warning(
+                "Stage 20: quality_gate produced no parseable JSON object "
+                "(likely a truncated json_mode response, resp len=%d) — falling "
+                "back to the default quality report.",
+                len(resp.content or ""),
+            )
     # BUG-25: If experiment failed with no metrics, cap the quality score
     if report is not None and _exp_failed:
         _orig_score = report.get("score_1_to_10", 5)
