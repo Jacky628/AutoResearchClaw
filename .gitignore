@@ -117,6 +117,7 @@ docs/tester_guide_cn.*
 /*_REPORT.md
 /*_SPEC.md
 /*_OVERHAUL.md
+/PR_DESCRIPTION.md
 
 # ── Experiments: only ARC-Bench harness/config is tracked ───────────────────
 # All other experiment workspaces are local-only research scratch.
