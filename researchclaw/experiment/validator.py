@@ -401,6 +401,46 @@ def validate_security(code: str, profile: str = "strict") -> CodeValidation:
     return result
 
 
+_JSON_LITERALS = {"null": "None", "true": "True", "false": "False"}
+
+
+def validate_json_literals(code: str) -> CodeValidation:
+    """Flag bare ``null`` / ``true`` / ``false`` used as Python names.
+
+    These are JSON literals, not Python — using them as a name raises
+    NameError at runtime. This is almost always a JSON-vs-Python slip (it made a
+    generated CadQuery eval harness report every valid solid as invalid, so the
+    experiment's metric was silently 0). We error unless the name is actually
+    bound in the module (e.g. an explicit ``null = None`` shim).
+    """
+    result = CodeValidation()
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return result  # syntax check reports it
+    bound: set[str] = set()
+    used: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Store) and node.id in _JSON_LITERALS:
+                bound.add(node.id)
+            elif isinstance(node.ctx, ast.Load) and node.id in _JSON_LITERALS:
+                used.setdefault(node.id, node.lineno)
+    for name, line in used.items():
+        if name in bound:
+            continue
+        result.issues.append(
+            ValidationIssue(
+                severity="error",
+                category="syntax",
+                message=(f"JSON literal '{name}' used as a Python name "
+                         f"(use {_JSON_LITERALS[name]}) — raises NameError at runtime"),
+                line=line,
+            )
+        )
+    return result
+
+
 def validate_imports(
     code: str,
     available: set[str] | None = None,
@@ -449,6 +489,9 @@ def validate_code(
     if not syntax.ok:
         # No point running further checks if code doesn't parse
         return combined
+
+    # 1b. JSON-literal-as-Python-name (null/true/false) — runtime NameError
+    combined.issues.extend(validate_json_literals(code).issues)
 
     # 2. Security
     if not skip_security:
