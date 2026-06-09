@@ -61,11 +61,22 @@ def _execute_resource_planning(
             sp.system,
             sp.user,
             json_mode=sp.json_mode,
-            max_tokens=sp.max_tokens,
+            max_tokens=sp.max_tokens or 6000,
         )
         parsed = _safe_json_loads(resp.content, {})
-        if isinstance(parsed, dict):
+        if isinstance(parsed, dict) and parsed:
             schedule = parsed
+        else:
+            # An empty {} from _safe_json_loads means the json_mode response did
+            # not parse (commonly a truncated, unclosed ```json fence). {} is a
+            # dict so the `schedule is None` guard below would NOT fire — handle
+            # it here so we fall back to the template and surface the truncation.
+            logger.warning(
+                "Stage 11: resource_planning produced no parseable JSON object "
+                "(likely a truncated json_mode response, resp len=%d) — falling "
+                "back to the default schedule template.",
+                len(resp.content or ""),
+            )
     if schedule is None:
         schedule = {
             "tasks": [
