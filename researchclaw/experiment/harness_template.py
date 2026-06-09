@@ -11,6 +11,7 @@ This file is NOT editable by the LLM agent — it provides a trust boundary
 for metric reporting, inspired by karpathy/autoresearch's immutable prepare.py.
 """
 
+import atexit
 import json
 import math
 import sys
@@ -27,6 +28,12 @@ class ExperimentHarness:
         self._partial_results: list[dict[str, object]] = []
         self._step_count = 0
         self._nan_count = 0
+        self._finalized = False
+        # Auto-persist on ANY exit (normal, sys.exit, or an uncaught crash in
+        # the experiment's own code — e.g. a buggy results serializer). This
+        # guarantees results.json is written from the metrics already reported,
+        # even if the experiment dies after reporting them.
+        atexit.register(self._safe_finalize)
 
     @property
     def elapsed(self) -> float:
@@ -85,7 +92,15 @@ class ExperimentHarness:
         self._partial_results.append(result_dict)
 
     def finalize(self) -> None:
-        """Write results.json with all reported metrics and partial results."""
+        """Write results.json with all reported metrics and partial results.
+
+        Idempotent: safe to call explicitly AND via the atexit hook — only the
+        first call writes (so an explicit finalize() near the end of the
+        experiment is not overwritten by the atexit fallback, and vice versa).
+        """
+        if self._finalized:
+            return
+        self._finalized = True
         output = {
             "metrics": self._metrics,
             "elapsed_sec": round(self.elapsed, 2),
@@ -101,6 +116,16 @@ class ExperimentHarness:
                 json.dump(output, f, indent=2, default=str)
         except OSError as e:
             print(f"WARNING: Could not write results.json: {e}", file=sys.stderr)
+
+    def _safe_finalize(self) -> None:
+        """atexit wrapper — must never raise during interpreter shutdown."""
+        try:
+            self.finalize()
+        except Exception as exc:  # noqa: BLE001
+            try:
+                print(f"WARNING: atexit finalize failed: {exc}", file=sys.stderr)
+            except Exception:  # noqa: BLE001
+                pass
 
     def step(self) -> None:
         """Increment step counter. Call this once per experiment step."""
