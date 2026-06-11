@@ -44,6 +44,15 @@ class TestMegaPromptEnvDescription:
         out = _render_mega_prompt("F{1}", 60, "env")
         assert "F{1}: <value>" in out
 
+    def test_prompt_carries_oracle_correctness_guidance(self):
+        # The beast-mode prompt (not prompts/ml.py) is the path opencode codegen
+        # actually uses — the oracle strictness + ground-truth calibration guidance
+        # MUST live here too, or generated oracles stay lenient/gamed.
+        out = _render_mega_prompt("validity_rate", 144000, "local sandbox")
+        assert "ORACLE_CALIBRATION: ground_truth_validity" in out
+        assert "count as success" in out  # the lenient anti-pattern it forbids
+        assert "MODE-COLLAPSE" in out
+
 
 # ============================================================
 # TestComplexityScorer
