@@ -127,6 +127,71 @@ def _estimate_stage12_footprint_bytes(run_dir: Path) -> int:
     return total
 
 
+_GT_CALIB_RE = re.compile(r"ground_truth_validity\s*=\s*([0-9]*\.?[0-9]+)")
+
+
+def _audit_metric_validity(
+    stdout: str | None, metrics: dict | None, *, ceiling_margin: float = 0.02
+) -> list[str]:
+    """Deterministic oracle-sanity backstop — does NOT trust the generated oracle.
+
+    Catches the failure where a lenient/gamed validity oracle reports implausibly
+    high validity (the Stage-12 acceptance found a condition at 1.0 > ground-truth
+    83%). Two independent checks:
+
+    1. Ground-truth ceiling: if the experiment printed
+       ``ORACLE_CALIBRATION: ground_truth_validity=<gt>``, no condition's validity
+       may exceed it — exceeding the reference ceiling means the oracle is gamed.
+    2. Floor/ceiling polarization: a validity *rate* that only ever lands on
+       exactly 0.0 or 1.0 across conditions is a red flag — a real oracle over many
+       samples rarely produces exact 0/1 everywhere.
+
+    Returns a list of human-readable warning strings (empty = nothing suspicious).
+    """
+    warnings: list[str] = []
+    stdout = stdout or ""
+    metrics = metrics or {}
+    vals: dict[str, float] = {}
+    for k, v in metrics.items():
+        kl = str(k).lower()
+        if "validity" not in kl:
+            continue
+        if any(s in kl for s in ("std", "_ci", "ci_", "degradation", "gap")):
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if fv != fv:  # NaN
+            continue
+        vals[k] = fv
+    if not vals:
+        return warnings
+    eps = 1e-6
+    m = _GT_CALIB_RE.search(stdout)
+    if m:
+        gt = float(m.group(1))
+        for k, fv in vals.items():
+            if fv > gt + ceiling_margin:
+                warnings.append(
+                    f"metric '{k}'={fv:.4f} EXCEEDS the ground-truth validity "
+                    f"ceiling {gt:.4f} — the oracle is likely being gamed "
+                    f"(lenient check or mode-collapsed output)."
+                )
+    only_floor_ceiling = all(abs(v) < eps or abs(v - 1.0) < eps for v in vals.values())
+    if len(vals) >= 2 and only_floor_ceiling and any(abs(v - 1.0) < eps for v in vals.values()):
+        msg = (
+            "validity values only ever take exactly 0.0 or 1.0 across conditions — "
+            "a working validity rate over many samples rarely lands on exact "
+            "floor/ceiling; suspect a degenerate or gamed oracle."
+        )
+        if not m:
+            msg += (" The oracle was also NOT calibrated against ground truth "
+                    "(no ORACLE_CALIBRATION line), so these numbers are unverified.")
+        warnings.append(msg)
+    return warnings
+
+
 def _execute_experiment_run(
     stage_dir: Path,
     run_dir: Path,
@@ -388,6 +453,21 @@ def _execute_experiment_run(
         }
         if structured_results is not None:
             run_payload["structured_results"] = structured_results
+        # Deterministic oracle-sanity backstop: flag implausible validity (a
+        # condition exceeding the ground-truth ceiling, or 0/1-polarized rates)
+        # regardless of what the generated oracle reports.
+        _metric_warnings = _audit_metric_validity(result.stdout, effective_metrics)
+        if _metric_warnings:
+            run_payload["metric_audit_warnings"] = _metric_warnings
+            (stage_dir / "METRIC_AUDIT.md").write_text(
+                "# ⚠️ Suspect experiment metrics (oracle sanity backstop)\n\n"
+                "These numbers may not reflect real model quality — verify the "
+                "evaluator before trusting or publishing them:\n\n"
+                + "\n".join(f"- {w}" for w in _metric_warnings) + "\n",
+                encoding="utf-8",
+            )
+            for _w in _metric_warnings:
+                logger.warning("Stage 12 metric audit: %s", _w)
         # Auto-generate results.json from parsed metrics if sandbox didn't produce one
         if structured_results is None and effective_metrics:
             auto_results = {"source": "stdout_parsed", "metrics": effective_metrics}
