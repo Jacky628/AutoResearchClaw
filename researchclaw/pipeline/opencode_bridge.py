@@ -265,11 +265,24 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   exception fired", never treat a missing or degenerate result as valid. A result
   counts as valid ONLY if it genuinely passes the check (e.g. for a CAD kernel: a
   non-degenerate solid with positive bounding-box extents AND .val().isValid()).
+- ORACLE SELF-TEST FIRST: before calibration, run ONE trivially-valid case through the
+  oracle (e.g. for a CAD kernel: `cq.Workplane("XY").box(1,1,1)`) — it MUST score
+  VALID. If it does not, the oracle IMPLEMENTATION itself is broken (wrong API name,
+  bad subprocess wiring, inverted logic): print `ORACLE_SELF_TEST_FAILED: <error>` and
+  raise. Use the library's exact Python API (check attribute names carefully — e.g.
+  cadquery solids use `.isValid()`, not the OCC C++ spelling `IsValid()`).
+- DATA FORMAT must match the oracle's input: implement EVERY data preprocessing /
+  format-conversion step the plan declares (e.g. a deterministic transpiler from a
+  structured JSON sequence format to executable code). If the dataset field is
+  structured data (JSON) but the oracle executes code, you MUST implement and apply
+  the converter for BOTH training targets and oracle inputs — never feed raw JSON to
+  an execution oracle.
 - CALIBRATE the oracle against GROUND TRUTH before trusting any number: run a sample
   of REAL reference outputs (the dataset's ground-truth target sequences) through the
   SAME oracle and print exactly `ORACLE_CALIBRATION: ground_truth_validity=<val>` (one
-  line). If ground-truth scores ~0, the oracle is BROKEN — fix it before running any
-  condition. Ground-truth validity is the realistic CEILING.
+  line). If ground-truth scores ~0, the oracle pipeline is BROKEN (oracle bug, missing
+  format conversion, or wrong field) — fix it before running any condition.
+  Ground-truth validity is the realistic CEILING.
 - NO trained condition may exceed ground-truth validity. A condition scoring >=
   ground_truth_validity (especially ==1.0 with std 0) is NOT a great result — it means
   the oracle is being gamed (a lenient check, or mode-collapsed output clearing a

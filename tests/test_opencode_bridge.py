@@ -52,6 +52,13 @@ class TestMegaPromptEnvDescription:
         assert "ORACLE_CALIBRATION: ground_truth_validity" in out
         assert "count as success" in out  # the lenient anti-pattern it forbids
         assert "MODE-COLLAPSE" in out
+        # Root-cause guards from the run-3 134s fail-fast: a broken oracle
+        # implementation (e.g. IsValid vs isValid) must be caught by a trivial
+        # self-test, and declared format conversions (JSON→code transpiler) must
+        # actually be implemented — never feed raw JSON to an execution oracle.
+        assert "ORACLE_SELF_TEST_FAILED" in out
+        assert "isValid()" in out
+        assert "format-conversion step" in out
 
 
 # ============================================================
