@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Protocol
 
@@ -286,6 +286,9 @@ class SandboxResult:
     elapsed_sec: float
     metrics: dict[str, object]
     timed_out: bool = False
+    # Directory holding the live stdout.log/stderr.log for this run (set by
+    # run_project); lets downstream artifacts point at the full streamed logs.
+    log_dir: str | None = None
 
 
 class SandboxProtocol(Protocol):
@@ -448,26 +451,48 @@ class ExperimentSandbox:
         command = self._build_command(entry, args=args, python_override=run_python)
         logger.debug("Running project sandbox command: %s (cwd=%s)", command, sandbox_project)
 
+        # Observability: stream stdout/stderr to files inside the sandbox dir
+        # instead of buffering in a PIPE, so long runs can be tailed live and
+        # partial output survives timeouts and runner crashes.
+        stdout_path = sandbox_project / "stdout.log"
+        stderr_path = sandbox_project / "stderr.log"
+
+        def _read_log(path: Path) -> str:
+            try:
+                return path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return ""
+
         result: SandboxResult
         try:
             env = {**os.environ, "PYTHONUNBUFFERED": "1"}
             if env_overrides:
                 env.update(env_overrides)
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_sec,
-                cwd=sandbox_project,
-                env=env,
-                check=False,
+            with stdout_path.open("w", encoding="utf-8", errors="replace") as out_f, \
+                    stderr_path.open("w", encoding="utf-8", errors="replace") as err_f:
+                completed = subprocess.run(
+                    command,
+                    stdout=out_f,
+                    stderr=err_f,
+                    timeout=timeout_sec,
+                    cwd=sandbox_project,
+                    env=env,
+                    check=False,
+                )
+            completed_with_text = subprocess.CompletedProcess(
+                args=completed.args,
+                returncode=completed.returncode,
+                stdout=_read_log(stdout_path),
+                stderr=_read_log(stderr_path),
             )
             result = self._result_from_completed(
-                completed, elapsed_sec=time.monotonic() - start
+                completed_with_text, elapsed_sec=time.monotonic() - start
             )
         except subprocess.TimeoutExpired as exc:
+            # With file redirection exc.stdout/stderr are None — recover the
+            # partial output from the log files instead.
+            exc.stdout = _read_log(stdout_path)
+            exc.stderr = _read_log(stderr_path)
             result = self._result_from_timeout(
                 exc, timeout_sec=timeout_sec, elapsed_sec=time.monotonic() - start
             )
@@ -476,7 +501,7 @@ class ExperimentSandbox:
                 exc, elapsed_sec=time.monotonic() - start
             )
 
-        return result
+        return replace(result, log_dir=str(sandbox_project))
 
     @staticmethod
     def _inject_harness(target_dir: Path) -> None:

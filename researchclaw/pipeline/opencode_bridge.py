@@ -293,6 +293,22 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   `WARNING: SUSPECT_OUTPUT condition=<name> reason=<...>`. Uniform perfection across
   heterogeneous inputs is a red flag, not a success.
 
+OBSERVABILITY / INCREMENTAL PERSISTENCE (long runs are monitored from OUTSIDE the
+sandbox through files in the working directory — results that only exist in memory
+or stdout are invisible until the very end and are LOST on a crash):
+- progress.json heartbeat: throughout training/eval, atomically update a small
+  `progress.json` in the working directory (write `progress.json.tmp`, then
+  `os.replace`) at least once per epoch AND roughly every minute of training, e.g.
+  {"phase": "train", "condition": "<name>", "seed": 0, "step": 120, "total_steps": 500,
+   "latest_metric": 0.41, "updated_at": "<iso8601>"}.
+- partial_results.jsonl: the moment ONE (condition, seed) evaluation finishes,
+  append its result as one JSON line ({"condition": ..., "seed": ..., "<metric>": ...})
+  and flush. Never accumulate all results only in memory until the final write.
+- Key checkpoint values (e.g. the ORACLE_CALIBRATION line) must ALSO be recorded in
+  progress.json (e.g. under a "calibration" key), not only printed.
+- These files are IN ADDITION to stdout prints and the final results.json, never a
+  replacement.
+
 Your task:
 1. Design the file structure (main.py is the required entry point).
 2. Implement ALL files with complete, runnable code. No placeholders or TODOs.
@@ -309,7 +325,8 @@ Your task:
 IMPORTANT CONSTRAINTS:
 - The code will run in the experiment environment configured in the project config: {env_description}
 - Do NOT use argparse or CLI arguments — hardcode all configuration.
-- All output must go to stdout (print statements).
+- All metric/log output must go to stdout (print statements), in addition to the
+  observability files (progress.json / partial_results.jsonl / results.json).
 - Keep the experiment feasible within {time_budget_sec} seconds total.
 """
 
