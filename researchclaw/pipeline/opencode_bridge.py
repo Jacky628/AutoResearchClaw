@@ -259,6 +259,27 @@ ACADEMIC RIGOR IS MANDATORY (the design's real tools/data, not stand-ins):
   try/except for crash handling. Use `subprocess` only when process isolation is
   genuinely required (e.g. guarding against a native crash).
 
+EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the ENTIRE experiment):
+- A validity/quality oracle must be STRICT: its except / error / parse-failure /
+  empty-result branch MUST report INVALID (False). NEVER "count as success if no
+  exception fired", never treat a missing or degenerate result as valid. A result
+  counts as valid ONLY if it genuinely passes the check (e.g. for a CAD kernel: a
+  non-degenerate solid with positive bounding-box extents AND .val().isValid()).
+- CALIBRATE the oracle against GROUND TRUTH before trusting any number: run a sample
+  of REAL reference outputs (the dataset's ground-truth target sequences) through the
+  SAME oracle and print exactly `ORACLE_CALIBRATION: ground_truth_validity=<val>` (one
+  line). If ground-truth scores ~0, the oracle is BROKEN — fix it before running any
+  condition. Ground-truth validity is the realistic CEILING.
+- NO trained condition may exceed ground-truth validity. A condition scoring >=
+  ground_truth_validity (especially ==1.0 with std 0) is NOT a great result — it means
+  the oracle is being gamed (a lenient check, or mode-collapsed output clearing a
+  trivial bar). Treat it as a BUG (tighten the oracle / check output diversity), do NOT
+  report it as a finding.
+- MODE-COLLAPSE CHECK: if a condition emits near-identical output across different
+  inputs/regimes (e.g. uniform 1.0 in every regime), print
+  `WARNING: SUSPECT_OUTPUT condition=<name> reason=<...>`. Uniform perfection across
+  heterogeneous inputs is a red flag, not a success.
+
 Your task:
 1. Design the file structure (main.py is the required entry point).
 2. Implement ALL files with complete, runnable code. No placeholders or TODOs.
