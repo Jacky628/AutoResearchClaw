@@ -127,6 +127,19 @@ def _estimate_stage12_footprint_bytes(run_dir: Path) -> int:
     return total
 
 
+def _head_tail(text: str, *, head: int = 4000, tail: int = 16000) -> str:
+    """Truncate long output keeping both ends — calibration prints live at the
+    head, final results and tracebacks at the tail."""
+    if len(text) <= head + tail:
+        return text
+    omitted = len(text) - head - tail
+    return (
+        text[:head]
+        + f"\n... [{omitted} chars omitted] ...\n"
+        + text[-tail:]
+    )
+
+
 _GT_CALIB_RE = re.compile(r"ground_truth_validity\s*=\s*([0-9]*\.?[0-9]+)")
 
 
@@ -342,8 +355,8 @@ def _execute_experiment_run(
             "status": run_status,
             "metrics": result.metrics,
             "elapsed_sec": result.elapsed_sec,
-            "stdout": result.stdout[:4000] if result.stdout else "",
-            "stderr": result.stderr[:2000] if result.stderr else "",
+            "stdout": _head_tail(result.stdout) if result.stdout else "",
+            "stderr": _head_tail(result.stderr, head=2000, tail=8000) if result.stderr else "",
             "timed_out": result.timed_out,
             "completed_at": _utcnow_iso(),
         }
@@ -451,6 +464,9 @@ def _execute_experiment_run(
             "timed_out": result.timed_out,
             "completed_at": _utcnow_iso(),
         }
+        if getattr(result, "log_dir", None):
+            run_payload["stdout_log_path"] = str(Path(result.log_dir) / "stdout.log")
+            run_payload["stderr_log_path"] = str(Path(result.log_dir) / "stderr.log")
         if structured_results is not None:
             run_payload["structured_results"] = structured_results
         # Deterministic oracle-sanity backstop: flag implausible validity (a
