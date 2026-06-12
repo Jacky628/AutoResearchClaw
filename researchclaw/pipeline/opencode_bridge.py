@@ -352,6 +352,13 @@ loses EVERY result computed before it):
   checks remaining time, or cap max_steps from the remaining budget BEFORE
   starting. Checking the budget only between conditions is NOT enough: one
   unguarded multi-hour call can blow straight through the stop line.
+- RUNTIME ETA CALIBRATION: planned step counts (RL steps, eval set sizes,
+  collection sample counts) are guesses until measured on THIS hardware. After
+  the first few steps/samples of each long loop, measure the per-step time,
+  print `ETA_CALIBRATION: phase=<name> sec_per_step=<s> projected_total=<s>`,
+  and if the projection exceeds that phase's share of the remaining budget,
+  SCALE DOWN the step/sample count proportionally (and print the new count)
+  rather than running blind into the stop line.
 - Write/refresh results.json incrementally (after EVERY condition completes),
   so even a hard kill preserves all finished conditions.
 
