@@ -386,10 +386,17 @@ Your task:
 3. main.py must be the entry point and print the primary metric as:
    {metric}: <value>
 4. Include numerical stability guards (gradient clipping, NaN detection, etc.).
-5. Use multi-seed evaluation (seeds 0, 1, 2) and report mean ± std.
+5. Use the EXACT seed count from the experiment plan's compute_budget (each condition's
+   `seeds:` field) — do NOT default to 3 seeds. If the plan says 2 seeds, use seeds [0, 1];
+   if 1, use [0]. Report mean ± std over exactly those seeds.
 6. Each ablation/condition MUST be genuinely different — not copy-paste with a renamed variable.
 7. Implement a time guard: stop gracefully at 80% of the time budget ({time_budget_sec} seconds).
-8. Write requirements.txt listing the declared pip packages the code imports.
+8. Write requirements.txt listing ONLY the top-level packages your code directly imports
+   (e.g. cadquery, transformers, trl, peft). Do NOT pin or declare transitive dependencies
+   that a top-level package installs automatically (e.g. do NOT add OCP / OCP.Core for
+   cadquery, or nvidia-* CUDA wheels for torch) — guessing their version numbers (e.g.
+   `OCP>=7.7`) breaks `pip install` because that version does not exist on PyPI. List only
+   what you `import` directly, at conservative minimum versions.
 9. If the experiment needs dataset downloads, write a setup.py that downloads
    the REAL declared dataset (no synthetic fallback).
 
