@@ -153,6 +153,68 @@ def search_hf_datasets(query: str, *, limit: int = 8, timeout: float = 8.0) -> l
     return out
 
 
+def _fallback_queries(primary: str | None, hf_id: str | None) -> list[str]:
+    """Build a degradation ladder of search queries.
+
+    Long descriptive dataset names ("DeepCAD sketch-extrude JSON sequences")
+    return zero HF search hits even when short keywords ("deepcad") match real
+    datasets — run-4 root cause of an unrecoverable MISSING verdict. Try the
+    specific query first, then progressively shorter keyword forms.
+    """
+    qs: list[str] = []
+    if primary:
+        qs.append(primary)
+    if hf_id and "/" in hf_id:
+        qs.append(hf_id.split("/")[-1])
+    if primary:
+        toks = re.findall(r"[A-Za-z][A-Za-z0-9]+", primary)
+        if toks:
+            qs.append(max(toks, key=len))  # longest token is usually the dataset's proper name
+            qs.append(toks[0])
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in qs:
+        ql = q.strip().lower()
+        if ql and ql not in seen:
+            seen.add(ql)
+            out.append(q.strip())
+    return out
+
+
+def local_hf_cache_candidates(cache_paths: list[str]) -> list[dict]:
+    """Discover HF dataset ids already cached on local disk.
+
+    `datasets` caches a dataset under `<cache>/.../<owner>___<name>/...`; the
+    directory name encodes a verified-by-use id. A locally cached dataset is the
+    strongest possible candidate (it was downloaded successfully before), so it
+    is offered ahead of any HF search hit.
+    """
+    import os
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for root in cache_paths:
+        if not root:
+            continue
+        try:
+            for dirpath, dirnames, _files in os.walk(root):
+                # Don't descend into the (potentially huge) cache content dirs
+                for d in list(dirnames):
+                    if "___" in d:
+                        owner, _, name = d.partition("___")
+                        if owner and name:
+                            hf_id = f"{owner}/{name}"
+                            if hf_id not in seen:
+                                seen.add(hf_id)
+                                out.append({"id": hf_id, "downloads": -1,
+                                            "gated": False, "local_cache": True})
+                if dirpath.count(os.sep) - root.count(os.sep) > 4:
+                    dirnames.clear()
+        except OSError:
+            continue
+    return out
+
+
 # ---------------------------------------------------------------------------
 # verdicts
 # ---------------------------------------------------------------------------
@@ -180,6 +242,7 @@ class SourceVerdict:
 def verify_source(
     src: str, *, online: bool = True, timeout: float = 8.0,
     search_query: str | None = None, search_on_missing: bool = True,
+    local_candidates: list[dict] | None = None,
 ) -> SourceVerdict:
     """Verify one declared dataset source. Non-HF / offline → UNVERIFIABLE."""
     kind = classify_source(src)
@@ -201,8 +264,15 @@ def verify_source(
         v.status = MISSING if info.http_status in (401, 404) else UNVERIFIABLE
         v.detail = info.error or "not found"
         if v.status == MISSING and search_on_missing:
-            v.candidates = search_hf_datasets(search_query or hf_id.split("/")[-1],
-                                              timeout=timeout)
+            hits: list[dict] = []
+            for q in _fallback_queries(search_query, hf_id):
+                hits = search_hf_datasets(q, timeout=timeout)
+                if hits:
+                    break
+            # Locally cached datasets outrank search hits (verified by use)
+            local = list(local_candidates or [])
+            local_ids = {c["id"] for c in local}
+            v.candidates = local + [h for h in hits if h["id"] not in local_ids]
         return v
     v.downloads, v.formats = info.downloads, info.formats
     if info.gated:
@@ -220,10 +290,18 @@ def verify_manifest_datasets(manifest, *, online: bool = True) -> dict:
 
     Returns {dataset_name: SourceVerdict.to_dict()}.
     """
+    cache_paths = [
+        getattr(ds, "cache", None) or ""
+        for ds in getattr(manifest, "datasets", ()) or ()
+    ]
+    local = local_hf_cache_candidates([p for p in cache_paths if p])
     out: dict[str, dict] = {}
     for ds in getattr(manifest, "datasets", ()) or ():
         name = getattr(ds, "name", "") or ""
         source = getattr(ds, "source", "") or ""
-        verdict = verify_source(source or name, online=online, search_query=name or None)
+        verdict = verify_source(
+            source or name, online=online, search_query=name or None,
+            local_candidates=local,
+        )
         out[name or source] = verdict.to_dict()
     return out
