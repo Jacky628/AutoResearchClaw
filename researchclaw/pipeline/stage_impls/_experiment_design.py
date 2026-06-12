@@ -216,6 +216,55 @@ def _write_environment_resolution(
         return False
 
 
+def _audit_compute_budget(plan: Any, time_budget_sec: int) -> list[str]:
+    """Deterministic sanity check of the plan's compute_budget arithmetic.
+
+    Run-4 root cause: the design LLM wrote internally-consistent but invented
+    numbers (5 seeds x guessed seconds_per_seed, a 20K-oracle-call collection
+    phase) that no one re-derived. The LLM cannot be trusted to audit its own
+    arithmetic — this check is code, not prompt.
+    """
+    findings: list[str] = []
+    if not isinstance(plan, dict):
+        return findings
+    cb = plan.get("compute_budget")
+    if not isinstance(cb, dict):
+        findings.append("compute_budget section is missing entirely.")
+        return findings
+    conds = cb.get("conditions") or []
+    total = 0
+    for c in conds:
+        if not isinstance(c, dict):
+            continue
+        sps = c.get("seconds_per_seed") or 0
+        seeds = c.get("seeds") or 0
+        declared = c.get("total")
+        try:
+            expect = float(sps) * float(seeds)
+            total += expect
+            if declared is not None and abs(float(declared) - expect) > max(60.0, 0.05 * expect):
+                findings.append(
+                    f"condition `{c.get('name','?')}`: declared total {declared}s "
+                    f"!= seconds_per_seed×seeds = {expect:.0f}s."
+                )
+        except (TypeError, ValueError):
+            findings.append(f"condition `{c.get('name','?')}`: non-numeric budget fields.")
+    cap = 0.8 * float(time_budget_sec)
+    if total > cap:
+        findings.append(
+            f"sum of condition budgets {total:.0f}s exceeds the 80% stop line "
+            f"({cap:.0f}s of {time_budget_sec}s) — later conditions WILL be "
+            f"starved/truncated at runtime."
+        )
+    if conds and not isinstance(cb.get("unit_costs"), dict):
+        findings.append(
+            "compute_budget has no `unit_costs` map — per-seed times are "
+            "underived guesses; require sec_per_llm_generation / "
+            "sec_per_oracle_call / sec_per_train_step assumptions."
+        )
+    return findings
+
+
 # P8: max automatic redesign passes when a declared dataset source is not real.
 _MAX_DATASET_REDESIGN = 2
 
@@ -237,7 +286,11 @@ def _dataset_redesign_prompt(plan: Any, missing: list[tuple]) -> str:
     lines = ["One or more declared datasets do NOT exist as a real public source:"]
     for name, source, cands in missing:
         c = ", ".join(
-            f"{x['id']} (downloads={x['downloads']}{', gated' if x.get('gated') else ''})"
+            f"{x['id']} ("
+            + ("ALREADY CACHED LOCALLY — strongly preferred"
+               if x.get("local_cache")
+               else f"downloads={x['downloads']}{', gated' if x.get('gated') else ''}")
+            + ")"
             for x in cands[:6]
         ) or "(no public candidates found)"
         lines.append(f"- `{name}` source `{source}` → NOT FOUND. Real candidates: {c}")
@@ -380,6 +433,24 @@ def _execute_experiment_design(
     llm: LLMClient | None = None,
     prompts: PromptManager | None = None,
 ) -> StageResult:
+    # Re-entry snapshot: a from-stage re-run overwrites stage-09 in place, which
+    # destroys the previous plan AND its verified facts (dataset source, model,
+    # measured budgets) — run-4 lost the run-3 plan this way. Archive first.
+    try:
+        if (stage_dir / "exp_plan.yaml").exists():
+            import shutil as _shutil_snap
+
+            _versions = [
+                int(p.name.replace("stage-09_v", ""))
+                for p in run_dir.glob("stage-09_v*")
+                if p.is_dir() and p.name.replace("stage-09_v", "").isdigit()
+            ]
+            _snap = run_dir / f"stage-09_v{max(_versions or [0]) + 1}"
+            _shutil_snap.copytree(stage_dir, _snap, dirs_exist_ok=True)
+            logger.info("Stage 9 re-entry: prior artifacts archived to %s", _snap.name)
+    except OSError:
+        logger.warning("Stage 9 re-entry snapshot failed", exc_info=True)
+
     hypotheses = _read_prior_artifact(run_dir, "hypotheses.md") or ""
     preamble = _build_context_preamble(
         config, run_dir, include_goal=True, include_hypotheses=True
@@ -940,6 +1011,21 @@ def _execute_experiment_design(
     _env_resolved = _write_environment_resolution(
         stage_dir, _resolution, _redesign_n, dataset_verdicts=_ds_verdicts
     )
+
+    # Deterministic budget-arithmetic audit — gate-visible, never blocks on its own.
+    _budget_findings = _audit_compute_budget(
+        plan, getattr(config.experiment, "time_budget_sec", 0) or 0
+    )
+    if _budget_findings:
+        (stage_dir / "BUDGET_AUDIT.md").write_text(
+            "# ⚠️ compute_budget audit findings\n\n"
+            "These numbers are arithmetically suspect — re-derive them from unit "
+            "costs before approving the gate:\n\n"
+            + "\n".join(f"- {w}" for w in _budget_findings) + "\n",
+            encoding="utf-8",
+        )
+        for _w in _budget_findings:
+            logger.warning("Stage 9 budget audit: %s", _w)
 
     _artifacts = ("exp_plan.yaml",)
     _evidence = ("stage-09/exp_plan.yaml",)
