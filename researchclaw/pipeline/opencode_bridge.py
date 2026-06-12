@@ -322,6 +322,23 @@ later conditions out of the time budget):
   checkpoint, an unexpected RETRAIN is a BUG — fail loudly rather than silently
   retraining.
 
+TIME-BUDGET GRACEFUL DEGRADATION (CRITICAL — a hard crash at the budget boundary
+loses EVERY result computed before it):
+- When the time guard fires mid-condition (e.g. data collection or training got
+  only a partial batch), the condition must SKIP gracefully: print
+  `CONDITION_SKIPPED: condition=<name> seed=<n> reason=time_budget`, record the
+  skip in results, and move on to writing final outputs. NEVER let a partial
+  state reach a bare `raise` (e.g. "too few samples" validation errors) — wrap
+  budget-truncation paths so the run still ends with a complete results.json
+  covering everything that DID finish.
+- Long inner training loops (e.g. a HuggingFace Trainer call that runs for
+  hours) MUST also respect the time budget — add a step/epoch callback that
+  checks remaining time, or cap max_steps from the remaining budget BEFORE
+  starting. Checking the budget only between conditions is NOT enough: one
+  unguarded multi-hour call can blow straight through the stop line.
+- Write/refresh results.json incrementally (after EVERY condition completes),
+  so even a hard kill preserves all finished conditions.
+
 Your task:
 1. Design the file structure (main.py is the required entry point).
 2. Implement ALL files with complete, runnable code. No placeholders or TODOs.
