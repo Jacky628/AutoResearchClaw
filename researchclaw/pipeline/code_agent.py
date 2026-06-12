@@ -922,7 +922,7 @@ class CodeAgent:
         sys_prompt = self._pm.system("code_generation")
         resp = self._chat(sys_prompt, prompt, max_tokens=16384)
 
-        fixed = self._extract_files(resp.content)
+        fixed = self._extract_files(resp.content, assume_main=False)
         if fixed:
             merged = dict(files)
             merged.update(fixed)
@@ -1064,7 +1064,7 @@ class CodeAgent:
         )
         resp = self._chat(sp.system, sp.user, max_tokens=16384)
 
-        fixed = self._extract_files(resp.content)
+        fixed = self._extract_files(resp.content, assume_main=False)
         if fixed:
             merged = dict(files)
             merged.update(fixed)
@@ -1170,7 +1170,7 @@ class CodeAgent:
         )
         resp = self._chat(sys_prompt, prompt, max_tokens=16384)
 
-        fixed = self._extract_files(resp.content)
+        fixed = self._extract_files(resp.content, assume_main=False)
         if not fixed:
             # Try extracting as single file
             code_match = re.search(
@@ -1436,12 +1436,16 @@ class CodeAgent:
 
         return result
 
-    def _extract_files(self, content: str) -> dict[str, str]:
-        """Extract multi-file code blocks from LLM output."""
+    def _extract_files(self, content: str, *, assume_main: bool = True) -> dict[str, str]:
+        """Extract multi-file code blocks from LLM output.
+
+        Pass ``assume_main=False`` for partial-repair responses so a fix that
+        only touches a non-entry module is never coerced into ``main.py``.
+        """
         # Local import to avoid circular dependency with executor.py
         from researchclaw.pipeline.executor import _extract_multi_file_blocks
 
-        return _extract_multi_file_blocks(content)
+        return _extract_multi_file_blocks(content, assume_main=assume_main)
 
     @staticmethod
     def _format_files(files: dict[str, str]) -> str:
