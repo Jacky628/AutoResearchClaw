@@ -202,6 +202,24 @@ def _audit_metric_validity(
             msg += (" The oracle was also NOT calibrated against ground truth "
                     "(no ORACLE_CALIBRATION line), so these numbers are unverified.")
         warnings.append(msg)
+    # All-zero floor: every condition at exactly 0.0 while ground truth scores
+    # well above zero means the generation/eval path is broken (truncated
+    # generations, bad prompt construction) or the model is untrained — the
+    # numbers carry no signal either way. (Run-3 shakedown: prompt built from
+    # "first 2 lines" of single-line programs + max_new_tokens far below the
+    # real completion length produced exactly this silent all-zero pattern.)
+    if (
+        len(vals) >= 2
+        and all(abs(v) < eps for v in vals.values())
+        and m is not None
+        and float(m.group(1)) > 0.1
+    ):
+        warnings.append(
+            f"ALL conditions report exactly 0.0 validity while ground-truth "
+            f"calibration is {float(m.group(1)):.4f} — the generation/eval path "
+            f"is likely broken (generation truncation, prompt construction) or "
+            f"the models are untrained; these results carry no comparative signal."
+        )
     return warnings
 
 
