@@ -309,6 +309,19 @@ or stdout are invisible until the very end and are LOST on a crash):
 - These files are IN ADDITION to stdout prints and the final results.json, never a
   replacement.
 
+CHECKPOINT REUSE (CRITICAL — a silent path mismatch retrains for hours and starves
+later conditions out of the time budget):
+- When one condition reuses another condition's trained checkpoint (e.g. RL/GRPO
+  starting from an SFT model), the save path and the load path MUST come from the
+  SAME single helper function or module-level constant (e.g.
+  `def sft_ckpt_dir(seed): ...`) — never two hand-written string literals.
+- At the start of every condition/seed, print exactly ONE of:
+  `CHECKPOINT_REUSE: condition=<name> seed=<n> path=<path>` or
+  `CHECKPOINT_RETRAIN: condition=<name> seed=<n> reason=<why>` (and record it in
+  progress.json). If the experiment plan says the condition builds on a previous
+  checkpoint, an unexpected RETRAIN is a BUG — fail loudly rather than silently
+  retraining.
+
 Your task:
 1. Design the file structure (main.py is the required entry point).
 2. Implement ALL files with complete, runnable code. No placeholders or TODOs.
