@@ -1381,10 +1381,11 @@ def _execute_code_generation(
                 repair_prompt,
                 max_tokens=_code_max_tokens,
             )
-            repaired = _extract_multi_file_blocks(repair_resp.content)
-            if repaired and "main.py" in repaired:
-                files = repaired
-                for fname, code in files.items():
+            repaired = _extract_multi_file_blocks(repair_resp.content, assume_main=False)
+            if repaired:
+                # Merge: a partial repair must never drop untouched files
+                files.update(repaired)
+                for fname, code in repaired.items():
                     (exp_dir / fname).write_text(code, encoding="utf-8")
                 # Re-check after repair
                 deep_warnings_after = deep_validate_files(files)
@@ -1517,10 +1518,11 @@ def _execute_code_generation(
                             fix_prompt,
                             max_tokens=_code_max_tokens,
                         )
-                        fixed_files = _extract_multi_file_blocks(fix_resp.content)
-                        if fixed_files and "main.py" in fixed_files:
-                            files = fixed_files
-                            for fname, code in files.items():
+                        fixed_files = _extract_multi_file_blocks(fix_resp.content, assume_main=False)
+                        if fixed_files:
+                            # Merge: a partial fix must never drop untouched files
+                            files.update(fixed_files)
+                            for fname, code in fixed_files.items():
                                 (exp_dir / fname).write_text(code, encoding="utf-8")
                             logger.info(
                                 "Stage 10: Code fixed after review "
