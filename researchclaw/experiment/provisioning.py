@@ -21,11 +21,40 @@ Enabled only when ``SandboxConfig.network_policy != "none"`` (default off).
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# pip emits these when a requirement cannot be resolved on the index:
+#   "ERROR: Could not find a version that satisfies the requirement OCP>=7.7 ..."
+#   "ERROR: No matching distribution found for OCP>=7.7"
+_PIP_UNRESOLVABLE_RE = re.compile(
+    r"(?:satisfies the requirement|No matching distribution found for)\s+"
+    r"([A-Za-z0-9][A-Za-z0-9._-]*)",
+)
+
+
+def _normalize_pkg(name: str) -> str:
+    """PyPI-normalize a distribution name (case-insensitive, -/_/. fold)."""
+    return re.sub(r"[-_.]+", "-", name.strip().lower())
+
+
+def _req_pkg_name(line: str) -> str | None:
+    """Extract the distribution name from one requirements.txt line, or None
+    for blanks/comments/options."""
+    s = line.split("#", 1)[0].strip()
+    if not s or s.startswith("-"):
+        return None
+    m = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", s)
+    return m.group(0) if m else None
+
+
+def _unresolvable_pkgs(pip_output: str) -> set[str]:
+    """Normalized names of requirements pip reported as non-existent."""
+    return {_normalize_pkg(m) for m in _PIP_UNRESOLVABLE_RE.findall(pip_output or "")}
 
 # Policies that perform pip install (requirements.txt).
 _PIP_POLICIES = {"pip_only", "setup_only", "full"}
@@ -106,19 +135,66 @@ def provision_project(
 
     # -- Phase 0b: pip install -r requirements.txt -----------------------------
     if do_pip and req.is_file():
+        # Defense-in-depth: a generated requirements.txt sometimes pins an
+        # invented transitive dependency (run-4 saw `OCP>=7.7`, which does not
+        # exist on PyPI) that fails the WHOLE install. On such a failure, drop
+        # the package(s) pip reports as unresolvable and retry, so a real top-
+        # level dep set still installs. Bounded retries in case several surface
+        # one at a time.
+        active_req = req
+        dropped_all: list[str] = []
         try:
-            completed = subprocess.run(
-                [py, "-m", "pip", "install", "--no-input", "-r", str(req)],
-                capture_output=True, text=True, timeout=timeout_sec, cwd=str(project_dir),
-            )
-            tail = (completed.stdout or "")[-500:] + (completed.stderr or "")[-500:]
-            if completed.returncode == 0:
-                result.pip_status = "ok"
-                logs.append("[pip] requirements.txt installed")
-            else:
-                result.pip_status = "failed"
-                errors.append("pip install failed")
-                logs.append(f"[pip] FAILED rc={completed.returncode}: {tail[-500:]}")
+            attempt = 0
+            while True:
+                attempt += 1
+                completed = subprocess.run(
+                    [py, "-m", "pip", "install", "--no-input", "-r", str(active_req)],
+                    capture_output=True, text=True, timeout=timeout_sec, cwd=str(project_dir),
+                )
+                out = (completed.stdout or "") + (completed.stderr or "")
+                tail = (completed.stdout or "")[-500:] + (completed.stderr or "")[-500:]
+                if completed.returncode == 0:
+                    result.pip_status = "ok"
+                    if dropped_all:
+                        logs.append(
+                            "[pip] requirements.txt installed after dropping "
+                            f"unresolvable: {', '.join(dropped_all)}"
+                        )
+                        errors.append(
+                            "pip: dropped non-existent requirement(s) "
+                            f"{', '.join(dropped_all)} (likely invented/transitive)"
+                        )
+                    else:
+                        logs.append("[pip] requirements.txt installed")
+                    break
+
+                bad = _unresolvable_pkgs(out)
+                if not bad or attempt > 3:
+                    result.pip_status = "failed"
+                    errors.append("pip install failed")
+                    logs.append(f"[pip] FAILED rc={completed.returncode}: {tail[-500:]}")
+                    break
+
+                # Rewrite a filtered requirements file without the bad packages.
+                kept: list[str] = []
+                removed: list[str] = []
+                for line in active_req.read_text(encoding="utf-8").splitlines():
+                    name = _req_pkg_name(line)
+                    if name and _normalize_pkg(name) in bad:
+                        removed.append(line.strip())
+                    else:
+                        kept.append(line)
+                if not removed:
+                    # pip blamed a package not present as a top-level line (e.g.
+                    # a transitive dep) — cannot fix by filtering; stop.
+                    result.pip_status = "failed"
+                    errors.append("pip install failed (unresolvable transitive dep)")
+                    logs.append(f"[pip] FAILED rc={completed.returncode}: {tail[-500:]}")
+                    break
+                dropped_all.extend(removed)
+                logs.append(f"[pip] retry {attempt}: dropping unresolvable {removed}")
+                active_req = project_dir / f".requirements.filtered{attempt}.txt"
+                active_req.write_text("\n".join(kept) + "\n", encoding="utf-8")
         except (OSError, subprocess.TimeoutExpired) as exc:
             result.pip_status = "failed"
             errors.append(f"pip install error: {exc}")
