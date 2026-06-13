@@ -62,7 +62,7 @@ def _load_provided_libs(run_dir: Path) -> dict[str, str]:
 
 
 def _provided_libs_guidance(libs: dict[str, str]) -> str:
-    """Build a codegen guidance block listing each provided lib's public API."""
+    """Build a codegen guidance block listing each provided lib's COMPLETE public API."""
     if not libs:
         return ""
     lines = [
@@ -72,12 +72,26 @@ def _provided_libs_guidance(libs: dict[str, str]) -> str:
         "call them instead of writing your own version of their functionality "
         "(re-implementing them is a known failure source — e.g. a dataset→code "
         "transpiler that silently mis-parses the schema and zeroes every metric).\n",
+        "CRITICAL — the list below each module is its COMPLETE export set. Import "
+        "ONLY these exact names. Do NOT import any name that is not listed (it does "
+        "not exist and will raise ImportError at startup). If you need any other "
+        "helper (constraint-token augmentation, op/complexity counting, tokenizer "
+        "setup, etc.), IMPLEMENT IT YOURSELF in your own files — do NOT assume it "
+        "lives in these modules.\n",
     ]
     for name, src in libs.items():
         mod = name[:-3]
-        defs = re.findall(r"^(def\s+(?!_)\w+\([^)]*\)[^:]*:|class\s+(?!_)\w+[^:]*:)", src, re.MULTILINE)
-        api = "\n".join(f"    {d.rstrip(':')}" for d in defs[:20]) or "    (see file)"
-        lines.append(f"- `{name}` — import as `import {mod}` / `from {mod} import ...`. Public API:\n{api}\n")
+        defs = re.findall(
+            r"^(def\s+(?!_)\w+\([^)]*\)[^:]*:|class\s+(?!_)\w+[^:]*:)", src, re.MULTILINE
+        )
+        consts = re.findall(r"^([A-Z][A-Z0-9_]*)\s*=", src, re.MULTILINE)
+        api_lines = [f"    {d.rstrip(':')}" for d in defs[:20]]
+        api_lines += [f"    {c}  (module constant)" for c in dict.fromkeys(consts)]
+        api = "\n".join(api_lines) or "    (see file)"
+        lines.append(
+            f"- `{name}` — import as `from {mod} import ...`. COMPLETE exports "
+            f"(import only these):\n{api}\n"
+        )
     return "\n".join(lines)
 
 
