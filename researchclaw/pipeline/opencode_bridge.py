@@ -310,6 +310,16 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   successful Workplane op). Apply this in EVERY validity-eval path, not just one
   helper. Scoring the raw full-length generation is a bug that silently zeroes a model
   whose early output was fine.
+- EVAL GENERATION EFFICIENCY (eval/proxy/RL generation dominates wall-clock when the
+  model does not emit EOS — every sample runs to the cap; run-4 eval was ~90s/sample,
+  ~75 min for 50): (1) cap eval/collection generation at ~p95 of completion length
+  (NOT p95×1.3 — the boundary extractor already salvages the valid prefix, so a
+  tighter cap costs almost no validity and is ~1.5× faster); (2) load the model for
+  GENERATION/eval in fp16/bf16, not 4-bit — 4-bit dequantizes every token (~2-3×
+  slower) and a <=3B model fits one card in fp16 anyway (keep 4-bit QLoRA for
+  TRAINING only); (3) BATCH the eval generations (pad a batch of prompts and call
+  generate once) instead of one sample at a time — 2-4× on a single GPU. Combined,
+  these cut eval from ~90s to ~15-25s/sample.
 - HARDWARE PLACEMENT: choose placement at RUNTIME with an explicit conditional — do
   NOT hardcode either single-GPU or 'auto'. Estimate the model's memory need (param
   count × bytes/param for the chosen dtype: 4-bit≈0.5, bf16/fp16≈2, fp32≈4; add ~20%
