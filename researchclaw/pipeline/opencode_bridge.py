@@ -389,6 +389,17 @@ loses EVERY result computed before it):
   checks remaining time, or cap max_steps from the remaining budget BEFORE
   starting. Checking the budget only between conditions is NOT enough: one
   unguarded multi-hour call can blow straight through the stop line.
+- STEPS ARE OPTIMIZER STEPS, NOT FORWARD PASSES: when you set HF Trainer
+  `max_steps` (or compute it for N epochs), count OPTIMIZER steps, which already
+  divide by gradient_accumulation_steps. One optimizer step processes
+  per_device_train_batch_size × gradient_accumulation_steps × n_gpu samples. So
+  `steps_per_epoch = ceil(num_samples / (batch × grad_accum × n_gpu))` and
+  `max_steps = epochs × steps_per_epoch`. Do NOT use num_samples/batch (ignoring
+  grad_accum) — that over-counts steps by the grad_accum factor and silently
+  trains for grad_accum× too many epochs (run-4: a "3-epoch" SFT ran 24 epochs,
+  4h instead of ~30min, and over-fit). Also: max_steps OVERRIDES num_train_epochs
+  in HF Trainer, so if you pass both, the epoch count you intend must already be
+  baked into max_steps by the formula above.
 - RUNTIME ETA CALIBRATION: planned step counts (RL steps, eval set sizes,
   collection sample counts) are guesses until measured on THIS hardware. After
   the first few steps/samples of each long loop, measure the per-step time,
