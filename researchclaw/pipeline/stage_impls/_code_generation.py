@@ -37,6 +37,50 @@ from researchclaw.prompts import PromptManager
 
 logger = logging.getLogger(__name__)
 
+
+def _load_provided_libs(run_dir: Path) -> dict[str, str]:
+    """Verified, operator-provided Python modules for this run.
+
+    A run can pin known-good helper modules (e.g. a dataset→executable
+    transpiler whose correctness the LLM cannot reliably reproduce) under
+    ``<run_dir>/provided_libs/*.py``. These are injected into the generated
+    project verbatim and the codegen prompt is told to import — not
+    reimplement — them. Returns {filename: source}; empty if none.
+    """
+    src = run_dir / "provided_libs"
+    libs: dict[str, str] = {}
+    if not src.is_dir():
+        return libs
+    for p in sorted(src.glob("*.py")):
+        if p.name.startswith("_") or p.name == "__init__.py":
+            continue
+        try:
+            libs[p.name] = p.read_text(encoding="utf-8")
+        except OSError as exc:  # noqa: BLE001
+            logger.warning("provided_libs: could not read %s: %s", p, exc)
+    return libs
+
+
+def _provided_libs_guidance(libs: dict[str, str]) -> str:
+    """Build a codegen guidance block listing each provided lib's public API."""
+    if not libs:
+        return ""
+    lines = [
+        "\n## Provided verified modules (import, do NOT reimplement)\n",
+        "The following modules are ALREADY PRESENT in your workspace, verified "
+        "correct, and will be injected into the final project. You MUST import and "
+        "call them instead of writing your own version of their functionality "
+        "(re-implementing them is a known failure source — e.g. a dataset→code "
+        "transpiler that silently mis-parses the schema and zeroes every metric).\n",
+    ]
+    for name, src in libs.items():
+        mod = name[:-3]
+        defs = re.findall(r"^(def\s+(?!_)\w+\([^)]*\)[^:]*:|class\s+(?!_)\w+[^:]*:)", src, re.MULTILINE)
+        api = "\n".join(f"    {d.rstrip(':')}" for d in defs[:20]) or "    (see file)"
+        lines.append(f"- `{name}` — import as `import {mod}` / `from {mod} import ...`. Public API:\n{api}\n")
+    return "\n".join(lines)
+
+
 # Improvement G: Continuous-action environments that are incompatible with DQN
 _CONTINUOUS_ENVS = {
     "pendulum", "halfcheetah", "hopper", "walker2d", "ant", "humanoid",
@@ -614,6 +658,15 @@ def _execute_code_generation(
         except Exception:  # noqa: BLE001
             pass
 
+    # A1: operator-provided verified modules — tell codegen to import, not reimplement
+    _provided_libs = _load_provided_libs(run_dir)
+    if _provided_libs:
+        extra_guidance += _provided_libs_guidance(_provided_libs)
+        logger.info(
+            "Stage 10: %d provided lib(s) will be injected: %s",
+            len(_provided_libs), ", ".join(_provided_libs),
+        )
+
     # --- F-01: Framework API doc injection (auto-detected) ---
     try:
         from researchclaw.data import detect_frameworks, load_framework_docs
@@ -1020,6 +1073,15 @@ def _execute_code_generation(
         if _fname == "setup.py":
             return "setup"
         return "provisioned" if _provisioned else "strict"
+
+    # A1: overwrite any LLM-generated copy with the canonical provided lib, so
+    # cross-import checks see them and the verified version (never an LLM rewrite)
+    # is what ships. Provided libs are pre-verified, so they skip repair.
+    if _provided_libs:
+        for _ln, _lc in _provided_libs.items():
+            if _ln in files and files[_ln] != _lc:
+                logger.info("Stage 10: replacing LLM copy of provided lib %s with canonical version", _ln)
+            files[_ln] = _lc
 
     # --- Validate each file + auto-repair loop ---
     all_valid = True
