@@ -305,13 +305,19 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   program (e.g. last syntactically-valid statement / matching close), so a model that
   rambles past the real end is scored on the valid prefix, NEVER on "valid program +
   trailing garbage". Feeding the raw full-length generation to the oracle is a bug.
-- HARDWARE PLACEMENT: if the model fits on ONE GPU (compare the plan's min_vram_gb to
-  a single device's memory — a <=3B model in 4-bit/bf16 easily fits one 24GB card),
-  pin it to a single device (device_map={'': 0} or an explicit .to('cuda:0')). Do NOT
-  use device_map='auto' to shard a small model across multiple GPUs: sharding forces
-  a cross-GPU transfer on every decode step, making autoregressive generation several
-  times slower for zero benefit. Shard ONLY when the model genuinely does not fit on
-  one device.
+- HARDWARE PLACEMENT: choose placement at RUNTIME with an explicit conditional — do
+  NOT hardcode either single-GPU or 'auto'. Estimate the model's memory need (param
+  count × bytes/param for the chosen dtype: 4-bit≈0.5, bf16/fp16≈2, fp32≈4; add ~20%
+  for optimizer/activations/a reference copy in RL) and compare it to ONE visible
+  device's free memory (torch.cuda.mem_get_info / get_device_properties). Then:
+    * if it fits on one device → pin to a single GPU (device_map={'': 0}) — this is
+      the common case for <=3B models in 4-bit/bf16 on a 24GB card;
+    * only if it does NOT fit on one device → shard with device_map='auto'.
+  Print the decision, e.g. `PLACEMENT: single_gpu est_gb=3.1 free_gb=23.6` or
+  `PLACEMENT: sharded est_gb=41 free_gb=23.6`. Rationale: sharding a model that fits
+  one card adds a cross-GPU transfer on every decode step, making autoregressive
+  generation several times slower for zero benefit; but hardcoding single-GPU would
+  OOM a model that genuinely needs sharding. The conditional handles both.
 - REWARD DEAD-ZONE GUARD (RL only): if the reward is constant across ALL generations
   for ~20 consecutive steps (e.g. every sample scores -1), the policy gradient is
   zero and further steps are pure waste — print
