@@ -300,11 +300,16 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   programs and every validity will be a meaningless 0.0: fix the budget before
   training anything.
 - ALWAYS pass eos_token_id to generate() so well-formed outputs stop early. Before
-  handing a generation to an execution oracle, TRUNCATE it at the program boundary:
-  strip everything after EOS, and for executable code cut at the first complete
-  program (e.g. last syntactically-valid statement / matching close), so a model that
-  rambles past the real end is scored on the valid prefix, NEVER on "valid program +
-  trailing garbage". Feeding the raw full-length generation to the oracle is a bug.
+  handing a generation to an execution oracle you MUST extract the valid program
+  prefix — do NOT rely on EOS alone. An under-trained model frequently emits NO EOS
+  at all (eos_frac≈0, truncated_frac≈1.0); stripping "everything after EOS" then does
+  nothing and the full cap-length ramble is scored INVALID. So implement a real
+  program-boundary extractor that, EVEN WHEN NO EOS IS PRESENT, walks the generation
+  and returns the longest leading prefix that parses/executes as a complete program
+  (e.g. last syntactically-valid statement / matching close / for CAD: up to the final
+  successful Workplane op). Apply this in EVERY validity-eval path, not just one
+  helper. Scoring the raw full-length generation is a bug that silently zeroes a model
+  whose early output was fine.
 - HARDWARE PLACEMENT: choose placement at RUNTIME with an explicit conditional — do
   NOT hardcode either single-GPU or 'auto'. Estimate the model's memory need (param
   count × bytes/param for the chosen dtype: 4-bit≈0.5, bf16/fp16≈2, fp32≈4; add ~20%
@@ -397,6 +402,12 @@ Your task:
    if 1, use [0]. Report mean ± std over exactly those seeds.
 6. Each ablation/condition MUST be genuinely different — not copy-paste with a renamed variable.
 7. Implement a time guard: stop gracefully at 80% of the time budget ({time_budget_sec} seconds).
+   But DO NOT UNDER-TRAIN to save budget: a model trained too few epochs never learns to
+   emit EOS and never converges, so it rambles to the token cap on every sample
+   (eos_frac≈0) and scores ~0 validity — wasting the whole run. Use enough epochs to
+   converge (>=3 is typical for SFT at these sizes), and follow any epoch count the plan
+   specifies. If budget is tight, cut eval/collection SAMPLE COUNTS or drop a CONDITION,
+   never shave training epochs below convergence.
 8. Write requirements.txt listing ONLY the top-level packages your code directly imports
    (e.g. cadquery, transformers, trl, peft). Do NOT pin or declare transitive dependencies
    that a top-level package installs automatically (e.g. do NOT add OCP / OCP.Core for
