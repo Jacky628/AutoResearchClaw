@@ -87,6 +87,28 @@ def _imported_modules(py: str) -> set[str]:
     return mods
 
 
+def _tool_is_used(py: str, name: str) -> bool:
+    """Whether a declared core tool is genuinely used by the code.
+
+    Beyond a physical-line ``import``, a tool is legitimately used via the
+    SUBPROCESS / exec pattern (recommended for crash isolation): the import
+    lives inside a code STRING that is exec'd or run in a subprocess, where it
+    may appear as a real newline inside a triple-quoted string OR as an escaped
+    ``\\nimport <tool>`` inside a single-line string. A physical-line regex
+    misses the escaped form and false-flags the experiment as not using the tool
+    (run-4: a CadQuery oracle that imports cadquery inside its subprocess wrapper
+    string was wrongly blocked). Count the tool as used if its import statement
+    appears ANYWHERE in the source text — physical line, triple-quoted string, or
+    escaped ``\\nimport`` inside a quoted string. The synthetic/mimic-marker
+    checks still catch genuine rule-based substitutes that never run the tool.
+    """
+    if name in _imported_modules(py):
+        return True
+    # import appearing anywhere, including inside string literals (exec/subprocess
+    # code), as a real or escaped newline-prefixed statement.
+    return bool(re.search(rf"(?:\\n|^|[\"'\s])(?:import|from)\s+{re.escape(name)}\b", py))
+
+
 def _plan_text(plan: Any) -> str:
     try:
         import json
@@ -127,7 +149,7 @@ def check_rigor(
     for req in pip_reqs:
         name = getattr(req, "import_name", None)
         spec = getattr(req, "spec", name)
-        if name and name in _MUST_USE_IF_DECLARED and name not in imports:
+        if name and name in _MUST_USE_IF_DECLARED and not _tool_is_used(py, name):
             violations.append(
                 f"Plan declares `{spec}` but no generated code imports `{name}` — "
                 f"the experiment must ACTUALLY use it (e.g. real CAD-kernel "
