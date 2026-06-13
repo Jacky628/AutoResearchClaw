@@ -361,6 +361,17 @@ or stdout are invisible until the very end and are LOST on a crash):
   progress.json (e.g. under a "calibration" key), not only printed.
 - These files are IN ADDITION to stdout prints and the final results.json, never a
   replacement.
+- EVERY long loop must emit progress — not just training. Eval, proxy-data
+  collection, and RL rollout loops MUST also update progress.json AND print a
+  line every ~10 items (e.g. `[eval <cond>] 10/50 valid_so_far=3`). A 50-sample
+  eval that prints nothing for an hour is an unobservable black box from outside
+  the sandbox (run-4: SFT eval ran ~75 min totally silent — the operator could
+  only guess from GPU/CPU whether it was alive or hung).
+- EXCEPTION HANDLERS MUST PRINT THE TRACEBACK: any `except` that records/handles
+  a failure must call `traceback.print_exc()` (or log exc_info), never just
+  `print(e)` / the message alone. A swallowed traceback turned a one-line
+  "chunk expects at least a 1-dimensional tensor" into a forced diagnostic rerun
+  before the real cause (DataParallel) was visible. Note tracebacks go to stderr.
 
 CHECKPOINT REUSE (CRITICAL — a silent path mismatch retrains for hours and starves
 later conditions out of the time budget):
