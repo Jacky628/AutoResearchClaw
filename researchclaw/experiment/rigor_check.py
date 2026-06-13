@@ -97,16 +97,22 @@ def _tool_is_used(py: str, name: str) -> bool:
     ``\\nimport <tool>`` inside a single-line string. A physical-line regex
     misses the escaped form and false-flags the experiment as not using the tool
     (run-4: a CadQuery oracle that imports cadquery inside its subprocess wrapper
-    string was wrongly blocked). Count the tool as used if its import statement
-    appears ANYWHERE in the source text — physical line, triple-quoted string, or
-    escaped ``\\nimport`` inside a quoted string. The synthetic/mimic-marker
-    checks still catch genuine rule-based substitutes that never run the tool.
+    string was wrongly blocked).
+
+    Two detections, both comment-safe:
+      1. a real import statement (``_imported_modules`` — its ``^\\s*import``
+         anchor already ignores comments and matches imports inside
+         triple-quoted strings, which are physical lines);
+      2. an escaped ``\\nimport <tool>`` inside a single-line string literal
+         (the subprocess-wrapper form). A literal ``\\n`` only occurs inside a
+         string, so this never matches a ``#`` comment that merely mentions the
+         tool. The synthetic/mimic-marker checks still catch genuine rule-based
+         substitutes.
     """
     if name in _imported_modules(py):
         return True
-    # import appearing anywhere, including inside string literals (exec/subprocess
-    # code), as a real or escaped newline-prefixed statement.
-    return bool(re.search(rf"(?:\\n|^|[\"'\s])(?:import|from)\s+{re.escape(name)}\b", py))
+    # escaped-newline-prefixed import inside a string literal (exec/subprocess code)
+    return bool(re.search(rf"\\n\s*(?:import|from)\s+{re.escape(name)}\b", py))
 
 
 def _plan_text(plan: Any) -> str:
@@ -140,7 +146,6 @@ def check_rigor(
     py = _all_python(files)
     if not py.strip():
         return RigorReport()  # nothing to check (no python yet)
-    imports = _imported_modules(py)
     py_low = py.lower()
     violations: list[str] = []
 
