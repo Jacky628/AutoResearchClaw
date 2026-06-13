@@ -323,6 +323,14 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   one card adds a cross-GPU transfer on every decode step, making autoregressive
   generation several times slower for zero benefit; but hardcoding single-GPU would
   OOM a model that genuinely needs sharding. The conditional handles both.
+  CRITICAL when pinning single-GPU: also restrict the process to ONE visible GPU by
+  setting `os.environ["CUDA_VISIBLE_DEVICES"]="0"` at the VERY TOP of the entry script
+  (before `import torch` / transformers). Otherwise a HuggingFace/TRL Trainer still
+  sees multiple GPUs (n_gpu>1) and auto-wraps the model in torch.nn.DataParallel,
+  whose input scatter then crashes with "chunk expects at least a 1-dimensional
+  tensor" (a 0-dim batch scalar cannot be split across GPUs). device_map={'': 0} pins
+  the MODEL but does NOT stop the Trainer's DataParallel — only limiting visible
+  devices does.
 - REWARD DEAD-ZONE GUARD (RL only): if the reward is constant across ALL generations
   for ~20 consecutive steps (e.g. every sample scores -1), the policy gradient is
   zero and further steps are pure waste — print
