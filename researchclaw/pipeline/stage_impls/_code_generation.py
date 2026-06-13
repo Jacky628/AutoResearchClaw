@@ -115,6 +115,41 @@ def _provided_libs_guidance(libs: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _run_smoke_test(exp_dir: Path, config: RCConfig, timeout_sec: int) -> tuple[str, str]:
+    """Run the generated project on a tiny budget (ARC_SMOKE=1) to catch runtime
+    crashes (import errors, NoneType, param clobber, DataParallel scatter) in
+    minutes instead of hours into the full Stage-12 run.
+
+    Returns (status, detail):
+      - "pass": completed cleanly, OR ran the whole timeout window without
+        crashing (startup/first-step bugs — the class this catches — surface
+        immediately, so "no crash in the window" clears them);
+      - "fail": the process crashed (non-zero exit); detail is the stderr tail
+        (traceback) for the repair step;
+      - "skip": the smoke harness itself errored (do not block the stage on that).
+    """
+    from researchclaw.experiment.factory import create_sandbox
+
+    try:
+        sandbox = create_sandbox(config.experiment, exp_dir.parent / "smoke_sandbox")
+        res = sandbox.run_project(
+            exp_dir, timeout_sec=timeout_sec, env_overrides={"ARC_SMOKE": "1"}
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Stage 10 smoke test harness error (not blocking): %s", exc)
+        return "skip", f"smoke harness error: {exc}"
+
+    if getattr(res, "timed_out", False):
+        return "pass", (
+            f"ran {timeout_sec}s without crashing (timed out; startup/first-step "
+            "bugs are absent — those crash immediately)"
+        )
+    if res.returncode == 0:
+        return "pass", "completed cleanly under ARC_SMOKE"
+    tb = (res.stderr or "")[-3000:] or (res.stdout or "")[-1500:]
+    return "fail", tb
+
+
 # Improvement G: Continuous-action environments that are incompatible with DQN
 _CONTINUOUS_ENVS = {
     "pendulum", "halfcheetah", "hopper", "walker2d", "ant", "humanoid",
@@ -1957,6 +1992,81 @@ Multi-file experiment project with {len(files)} file(s): {file_list}
             evidence_refs=tuple(f"stage-10/{a}" for a in artifacts),
             error=f"Topic-experiment misalignment: {alignment_note}",
         )
+
+    # --- Smoke test: run the generated project tiny (ARC_SMOKE=1) to catch
+    # runtime logic bugs before the multi-hour Stage-12 run. Repair on crash. ---
+    if (
+        getattr(config.experiment, "smoke_test_enabled", True)
+        and config.experiment.mode in ("sandbox", "docker")
+        and "main.py" in files
+        and getattr(config.experiment.sandbox, "network_policy", "none") != "none"
+    ):
+        _smoke_timeout = getattr(config.experiment, "smoke_test_timeout_sec", 600)
+        _smoke_attempt = 0
+        _MAX_SMOKE_REPAIR = 2
+        _smoke_status, _smoke_detail = _run_smoke_test(exp_dir, config, _smoke_timeout)
+        while _smoke_status == "fail" and llm is not None and _smoke_attempt < _MAX_SMOKE_REPAIR:
+            _smoke_attempt += 1
+            logger.warning(
+                "Stage 10 smoke FAILED (repair %d/%d). Traceback tail:\n%s",
+                _smoke_attempt, _MAX_SMOKE_REPAIR, _smoke_detail,
+            )
+            _ctx = "\n\n".join(
+                f"```filename:{f}\n{c}\n```" for f, c in files.items() if f.endswith(".py")
+            )
+            _user = (
+                "The generated experiment CRASHED at runtime during a smoke test "
+                "(tiny 1-2 sample run). Fix the ROOT CAUSE shown in this traceback "
+                "— do not mask it. Common causes: importing a name that doesn't "
+                "exist, calling a function on the wrong type (NoneType), "
+                "overwriting a parameter, or a framework misconfig. Return the "
+                "COMPLETE corrected file(s), each as a "
+                "```filename:<name>\\n<code>\\n``` block.\n\n"
+                f"TRACEBACK (stderr tail):\n{_smoke_detail}\n\nCurrent files:\n{_ctx}"
+            )
+            try:
+                resp = _chat_with_prompt(
+                    llm,
+                    "You are a careful research engineer fixing a runtime crash. "
+                    "Address the exact exception in the traceback.",
+                    _user,
+                )
+                _fixed = _extract_multi_file_blocks(resp.content, assume_main=False)
+            except Exception:  # noqa: BLE001
+                logger.debug("Smoke repair attempt failed", exc_info=True)
+                break
+            if not _fixed:
+                logger.warning("Smoke repair produced no files; stopping repair")
+                break
+            for _k, _v in _fixed.items():
+                if _k.endswith(".py"):
+                    import ast as _ast2
+                    try:
+                        _ast2.parse(_v)
+                    except SyntaxError:
+                        logger.warning("Smoke-repaired %s has syntax error, keeping original", _k)
+                        continue
+                files[_k] = _v
+                (exp_dir / _k).write_text(_v, encoding="utf-8")
+            _smoke_status, _smoke_detail = _run_smoke_test(exp_dir, config, _smoke_timeout)
+
+        if _smoke_status == "fail":
+            (stage_dir / "SMOKE_FAILED.md").write_text(
+                "# ⛔ Smoke test failed — generated code crashes at runtime\n\n"
+                f"After {_smoke_attempt} repair attempt(s) the tiny ARC_SMOKE run "
+                "still crashes. Fix before the full Stage-12 run.\n\n"
+                "```\n" + _smoke_detail + "\n```\n",
+                encoding="utf-8",
+            )
+            logger.error("Stage 10: BLOCKED — smoke test still crashing after %d repair(s)", _smoke_attempt)
+            return StageResult(
+                stage=Stage.CODE_GENERATION,
+                status=StageStatus.FAILED,
+                artifacts=tuple(artifacts) + ("SMOKE_FAILED.md",),
+                evidence_refs=tuple(f"stage-10/{a}" for a in artifacts) + ("stage-10/SMOKE_FAILED.md",),
+                error="Smoke test crashed: " + _smoke_detail.strip().splitlines()[-1][:200] if _smoke_detail.strip() else "Smoke test crashed",
+            )
+        logger.info("Stage 10 smoke test: %s — %s", _smoke_status, _smoke_detail[:120])
 
     return StageResult(
         stage=Stage.CODE_GENERATION,
