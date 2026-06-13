@@ -78,19 +78,39 @@ def _provided_libs_guidance(libs: dict[str, str]) -> str:
         "helper (constraint-token augmentation, op/complexity counting, tokenizer "
         "setup, etc.), IMPLEMENT IT YOURSELF in your own files — do NOT assume it "
         "lives in these modules.\n",
+        "READ EACH FUNCTION'S DOCSTRING (shown below) AND RESPECT ITS SEMANTICS. "
+        "In particular, mind what each function RETURNS: do NOT feed one function's "
+        "OUTPUT into another function that expects a different input. If a function "
+        "already returns the final product (e.g. a 'sample → executable code' helper "
+        "that returns ready-to-run code), use its result directly — do NOT pass it "
+        "through a lower-level converter again (double-conversion silently produces "
+        "garbage and zeroes every metric).\n",
     ]
+    import ast as _ast
+
     for name, src in libs.items():
         mod = name[:-3]
-        defs = re.findall(
-            r"^(def\s+(?!_)\w+\([^)]*\)[^:]*:|class\s+(?!_)\w+[^:]*:)", src, re.MULTILINE
-        )
-        consts = re.findall(r"^([A-Z][A-Z0-9_]*)\s*=", src, re.MULTILINE)
-        api_lines = [f"    {d.rstrip(':')}" for d in defs[:20]]
-        api_lines += [f"    {c}  (module constant)" for c in dict.fromkeys(consts)]
-        api = "\n".join(api_lines) or "    (see file)"
+        api_lines: list[str] = []
+        try:
+            tree = _ast.parse(src)
+            for node in tree.body:
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and not node.name.startswith("_"):
+                    args = ", ".join(a.arg for a in node.args.args)
+                    doc = (_ast.get_docstring(node) or "").strip().splitlines()
+                    doc1 = " ".join(l.strip() for l in doc if l.strip())[:200]
+                    api_lines.append(f"    def {node.name}({args})" + (f"  — {doc1}" if doc1 else ""))
+                elif isinstance(node, _ast.ClassDef) and not node.name.startswith("_"):
+                    api_lines.append(f"    class {node.name}")
+                elif isinstance(node, _ast.Assign):
+                    for t in node.targets:
+                        if isinstance(t, _ast.Name) and t.id.isupper():
+                            api_lines.append(f"    {t.id}  (module constant)")
+        except SyntaxError:
+            api_lines = ["    (see file)"]
+        api = "\n".join(api_lines[:25]) or "    (see file)"
         lines.append(
             f"- `{name}` — import as `from {mod} import ...`. COMPLETE exports "
-            f"(import only these):\n{api}\n"
+            f"(import only these), with docstrings:\n{api}\n"
         )
     return "\n".join(lines)
 
