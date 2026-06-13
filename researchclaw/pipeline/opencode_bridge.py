@@ -453,6 +453,14 @@ IMPORTANT CONSTRAINTS:
 - All metric/log output must go to stdout (print statements), in addition to the
   observability files (progress.json / partial_results.jsonl / results.json).
 - Keep the experiment feasible within {time_budget_sec} seconds total.
+- SMOKE-TEST HOOK: at the very top of main(), check `if os.environ.get("ARC_SMOKE"):`
+  and shrink EVERY cost knob to the minimum that still exercises each code path —
+  all conditions but seeds=[0] only, train steps/epochs → 1, eval/proxy/collection
+  sample counts → 2, RL steps → 1, dataset subset → a few rows. The goal: run ALL
+  conditions end-to-end (train 1 step, eval 2 samples, GRPO 1 step, oracle) in 1-2
+  minutes so a pre-flight catches runtime crashes (import errors, NoneType, shape
+  mismatches, Trainer misconfig) before the multi-hour real run. ARC_SMOKE must
+  still touch every condition and the real tools/oracle — it only shrinks sizes.
 """
 
 

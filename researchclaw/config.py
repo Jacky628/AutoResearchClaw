@@ -583,6 +583,12 @@ class ExperimentConfig:
     metric_key: str = "primary_metric"
     metric_direction: str = "minimize"
     keep_threshold: float = 0.0
+    # Stage-10→12 smoke test: after code generation, run the generated project on
+    # a tiny budget (ARC_SMOKE=1) to catch runtime logic bugs (import errors,
+    # NoneType, param clobber, DataParallel) in minutes instead of hours into the
+    # full run. Only runs for sandbox/docker modes with provisioning enabled.
+    smoke_test_enabled: bool = True
+    smoke_test_timeout_sec: int = 600
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     docker: DockerSandboxConfig = field(default_factory=DockerSandboxConfig)
     agentic: AgenticConfig = field(default_factory=AgenticConfig)
@@ -1294,6 +1300,8 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
         metric_key=data.get("metric_key", "primary_metric"),
         metric_direction=data.get("metric_direction", "minimize"),
         keep_threshold=_safe_float(data.get("keep_threshold"), 0.0),
+        smoke_test_enabled=bool(data.get("smoke_test_enabled", True)),
+        smoke_test_timeout_sec=_safe_int(data.get("smoke_test_timeout_sec"), 600),
         sandbox=SandboxConfig(
             python_path=sandbox_data.get("python_path", DEFAULT_PYTHON_PATH),
             gpu_required=bool(sandbox_data.get("gpu_required", False)),
