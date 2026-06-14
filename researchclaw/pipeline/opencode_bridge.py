@@ -317,7 +317,11 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   tighter cap costs almost no validity and is ~1.5× faster); (2) load the model for
   GENERATION/eval in fp16/bf16, not 4-bit — 4-bit dequantizes every token (~2-3×
   slower) and a <=3B model fits one card in fp16 anyway (keep 4-bit QLoRA for
-  TRAINING only); (3) BATCH the eval generations (pad a batch of prompts and call
+  TRAINING only). To use a QLoRA adapter that was TRAINED on a 4-bit base for
+  fp16 eval, just load an fp16 base and attach the adapter
+  (`PeftModel.from_pretrained(fp16_base, adapter_dir)`) — this is standard, no
+  merge needed and the small quantization-vs-fp16 numeric shift is harmless;
+  (3) BATCH the eval generations (pad a batch of prompts and call
   generate once) instead of one sample at a time — 2-4× on a single GPU. Combined,
   these cut eval from ~90s to ~15-25s/sample.
 - HARDWARE PLACEMENT: choose placement at RUNTIME with an explicit conditional — do
