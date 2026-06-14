@@ -107,6 +107,10 @@ experiment:
   max_iterations: 10
   metric_key: "primary_metric"
   metric_direction: "minimize"
+  # Stage 10→12 冒烟测试:全量前用 ARC_SMOKE=1 小跑生成代码抓运行时崩溃
+  # 仅 sandbox/docker 且对应 network_policy != none 时生效
+  smoke_test_enabled: true
+  smoke_test_timeout_sec: 600   # main.py 执行限时(秒),不含 provisioning
   sandbox:
     # Use ".venv/Scripts/python.exe" on Windows
     python_path: ".venv/bin/python3"
