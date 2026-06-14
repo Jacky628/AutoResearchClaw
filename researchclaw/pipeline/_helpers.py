@@ -356,7 +356,10 @@ def _ensure_sandbox_deps(code: str, python_path: str) -> list[str]:
         try:
             r = _sp.run(
                 [str(py_path), "-c", f"import {pkg}"],
-                capture_output=True, timeout=10,
+                # torch's first import on WSL2/cold cache routinely exceeds 10s;
+                # a timeout here raises TimeoutExpired, which is swallowed below
+                # and silently skips the dependency check for that package.
+                capture_output=True, timeout=60,
                 encoding="utf-8", errors="replace",
             )
             if r.returncode != 0:
