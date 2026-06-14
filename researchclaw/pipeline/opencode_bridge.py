@@ -411,6 +411,16 @@ or stdout are invisible until the very end and are LOST on a crash):
 - partial_results.jsonl: the moment ONE (condition, seed) evaluation finishes,
   append its result as one JSON line ({"condition": ..., "seed": ..., "<metric>": ...})
   and flush. Never accumulate all results only in memory until the final write.
+- AUDIT SAMPLE DUMP (content-auditability — aggregate metrics alone are NOT
+  auditable): during each (condition, seed) eval, save a SMALL sample (e.g. the
+  first 10-20) of the ACTUAL model outputs with their oracle verdict to
+  `eval_samples_<condition>_seed<n>.jsonl`, one JSON line each:
+  {"prompt": <input>, "generation": <raw model output text>, "oracle_valid":
+  true/false, "regime": "simple"/"complex"}. A reviewer must be able to eyeball
+  whether generations are real domain artifacts (not degenerate text that happens
+  to clear a lenient check) and whether the oracle labeled individual samples
+  correctly — a non-zero validity_rate with garbage generations is a silent
+  failure that only per-sample dumps catch.
 - Key checkpoint values (e.g. the ORACLE_CALIBRATION line) must ALSO be recorded in
   progress.json (e.g. under a "calibration" key), not only printed.
 - These files are IN ADDITION to stdout prints and the final results.json, never a
