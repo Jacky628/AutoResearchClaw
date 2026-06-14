@@ -339,6 +339,16 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   cap, output is truncated/incomplete, validity collapses to ~0 (full-scale only —
   a 1-epoch smoke is under-trained so eos_frac=0 there too and CANNOT reveal this;
   it only surfaces after real training). This silently invalidated a whole run.
+  ASSERT IT AT BUILD TIME (this is the only check that catches the bug regardless
+  of scale): right after building the training dataset, assert that a sample's
+  last token == the EOS id, e.g. `assert ds[0]["input_ids"][-1] == tokenizer.eos_token_id`
+  (or the reserved EOS id for a from-scratch model). Execution-based smoke CANNOT
+  catch this — a 1-epoch smoke is under-trained so eos_frac=0 and validity~0 there
+  whether or not EOS is in the data, so the symptom is indistinguishable from
+  normal under-training; only a deterministic build-time assertion fails fast.
+  More generally, guard correctness PROPERTIES that an under-trained smoke run
+  cannot reveal (EOS-in-data, label balance, feature dims) with cheap static
+  assertions on the prepared data, not by inspecting tiny-scale metrics.
 - FREE THE TRAINING MODEL BEFORE EVAL: after training finishes and the adapter is
   saved, `del trainer, model; gc.collect(); torch.cuda.empty_cache()` BEFORE the
   eval load. Otherwise the training model stays resident (~12GB), the eval load
