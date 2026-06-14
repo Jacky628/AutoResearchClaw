@@ -329,6 +329,18 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   (3) BATCH the eval generations (pad a batch of prompts and call
   generate once) instead of one sample at a time — 2-4× on a single GPU. Combined,
   these cut eval from ~90s to ~15-25s/sample.
+- SFT TRAINING DATA MUST END WITH EOS (root cause of "model never stops"):
+  append `tokenizer.eos_token` to EVERY SFT training example text
+  (`text = code + tokenizer.eos_token`). Without it the model never learns to
+  terminate → at eval eos_frac=0, every generation runs to the token cap, the
+  output is truncated/incomplete, and validity collapses to ~0 (full-scale only —
+  a 1-epoch smoke is under-trained so eos_frac=0 there too and CANNOT reveal this;
+  it only surfaces after real training). This silently invalidated a whole run.
+- FREE THE TRAINING MODEL BEFORE EVAL: after training finishes and the adapter is
+  saved, `del trainer, model; gc.collect(); torch.cuda.empty_cache()` BEFORE the
+  eval load. Otherwise the training model stays resident (~12GB), the eval load
+  sees little free VRAM, and the placement logic needlessly shards eval across
+  GPUs (slower per-token generation).
 - HARDWARE PLACEMENT (multi-GPU box): keep ALL GPUs visible — do NOT set
   CUDA_VISIBLE_DEVICES to a single id. The experiment runs every condition in ONE
   process; hiding a GPU to make one condition single-GPU permanently blocks LATER
