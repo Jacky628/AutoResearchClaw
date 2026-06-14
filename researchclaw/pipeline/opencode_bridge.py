@@ -329,11 +329,14 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   (3) BATCH the eval generations (pad a batch of prompts and call
   generate once) instead of one sample at a time — 2-4× on a single GPU. Combined,
   these cut eval from ~90s to ~15-25s/sample.
-- SFT TRAINING DATA MUST END WITH EOS (root cause of "model never stops"):
-  append `tokenizer.eos_token` to EVERY SFT training example text
-  (`text = code + tokenizer.eos_token`). Without it the model never learns to
-  terminate → at eval eos_frac=0, every generation runs to the token cap, the
-  output is truncated/incomplete, and validity collapses to ~0 (full-scale only —
+- EVERY GENERATIVE MODEL'S TRAINING SEQUENCES MUST END WITH ITS STOP/EOS TOKEN
+  (root cause of "model never stops"): for SFT, append `tokenizer.eos_token` to
+  every training text (`text = code + tokenizer.eos_token`); for a FROM-SCRATCH
+  token model, append the exact reserved EOS id its generate loop stops on (e.g.
+  if generation breaks on `next_id == 1`, training sequences must end with 1 —
+  and that id must not collide with a real data token). Without it the model never
+  learns to terminate → at eval eos_frac=0, every generation runs to the token
+  cap, output is truncated/incomplete, validity collapses to ~0 (full-scale only —
   a 1-epoch smoke is under-trained so eos_frac=0 there too and CANNOT reveal this;
   it only surfaces after real training). This silently invalidated a whole run.
 - FREE THE TRAINING MODEL BEFORE EVAL: after training finishes and the adapter is
