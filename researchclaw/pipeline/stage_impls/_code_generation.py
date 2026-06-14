@@ -1995,11 +1995,17 @@ Multi-file experiment project with {len(files)} file(s): {file_list}
 
     # --- Smoke test: run the generated project tiny (ARC_SMOKE=1) to catch
     # runtime logic bugs before the multi-hour Stage-12 run. Repair on crash. ---
+    if config.experiment.mode == "docker":
+        _smoke_net = config.experiment.docker.network_policy
+    elif config.experiment.mode == "sandbox":
+        _smoke_net = config.experiment.sandbox.network_policy
+    else:
+        _smoke_net = "none"
     if (
         getattr(config.experiment, "smoke_test_enabled", True)
         and config.experiment.mode in ("sandbox", "docker")
         and "main.py" in files
-        and getattr(config.experiment.sandbox, "network_policy", "none") != "none"
+        and _smoke_net != "none"
     ):
         _smoke_timeout = getattr(config.experiment, "smoke_test_timeout_sec", 600)
         _smoke_attempt = 0
