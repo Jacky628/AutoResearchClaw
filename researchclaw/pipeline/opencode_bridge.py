@@ -459,8 +459,12 @@ loses EVERY result computed before it):
   divide by gradient_accumulation_steps. One optimizer step processes
   per_device_train_batch_size × gradient_accumulation_steps × n_gpu samples. So
   `steps_per_epoch = ceil(num_samples / (batch × grad_accum × n_gpu))` and
-  `max_steps = epochs × steps_per_epoch`. Do NOT use num_samples/batch (ignoring
-  grad_accum) — that over-counts steps by the grad_accum factor and silently
+  `max_steps = epochs × steps_per_epoch`. Here n_gpu is the DATA-PARALLEL world size,
+  which is 1 in this setup (single-GPU training pins trainer._n_gpu=1; sharded
+  device_map='auto' is MODEL-parallel, not data-parallel) — do NOT plug in
+  torch.cuda.device_count() (both GPUs visible) or you halve the step count and
+  under-train. Do NOT use num_samples/batch (ignoring grad_accum) — that over-counts
+  steps by the grad_accum factor and silently
   trains for grad_accum× too many epochs (run-4: a "3-epoch" SFT ran 24 epochs,
   4h instead of ~30min, and over-fit). Also: max_steps OVERRIDES num_train_epochs
   in HF Trainer, so if you pass both, the epoch count you intend must already be
