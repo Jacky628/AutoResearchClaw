@@ -271,6 +271,11 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   bad subprocess wiring, inverted logic): print `ORACLE_SELF_TEST_FAILED: <error>` and
   raise. Use the library's exact Python API (check attribute names carefully — e.g.
   cadquery solids use `.isValid()`, not the OCC C++ spelling `IsValid()`).
+  RETRY the self-test a few times (e.g. 3) with a generous timeout before raising: a
+  subprocess oracle's FIRST import of a heavy kernel (cadquery/OCP) can be cold and
+  exceed a tight timeout once — a genuinely broken oracle fails every attempt, so retry
+  distinguishes a one-off cold-start flake from a real break. Also: do NOT clobber a
+  caller-supplied timeout (no `timeout = None` line that overrides the argument).
 - DATA FORMAT must match the oracle's input: implement EVERY data preprocessing /
   format-conversion step the plan declares (e.g. a deterministic transpiler from a
   structured JSON sequence format to executable code). If the dataset field is
@@ -324,27 +329,62 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   (3) BATCH the eval generations (pad a batch of prompts and call
   generate once) instead of one sample at a time — 2-4× on a single GPU. Combined,
   these cut eval from ~90s to ~15-25s/sample.
-- HARDWARE PLACEMENT: choose placement at RUNTIME with an explicit conditional — do
-  NOT hardcode either single-GPU or 'auto'. Estimate the model's memory need (param
-  count × bytes/param for the chosen dtype: 4-bit≈0.5, bf16/fp16≈2, fp32≈4; add ~20%
-  for optimizer/activations/a reference copy in RL) and compare it to ONE visible
-  device's free memory (torch.cuda.mem_get_info / get_device_properties). Then:
-    * if it fits on one device → pin to a single GPU (device_map={'': 0}) — this is
-      the common case for <=3B models in 4-bit/bf16 on a 24GB card;
-    * only if it does NOT fit on one device → shard with device_map='auto'.
-  Print the decision, e.g. `PLACEMENT: single_gpu est_gb=3.1 free_gb=23.6` or
-  `PLACEMENT: sharded est_gb=41 free_gb=23.6`. Rationale: sharding a model that fits
-  one card adds a cross-GPU transfer on every decode step, making autoregressive
-  generation several times slower for zero benefit; but hardcoding single-GPU would
-  OOM a model that genuinely needs sharding. The conditional handles both.
-  CRITICAL when pinning single-GPU: also restrict the process to ONE visible GPU by
-  setting `os.environ["CUDA_VISIBLE_DEVICES"]="0"` at the VERY TOP of the entry script
-  (before `import torch` / transformers). Otherwise a HuggingFace/TRL Trainer still
-  sees multiple GPUs (n_gpu>1) and auto-wraps the model in torch.nn.DataParallel,
-  whose input scatter then crashes with "chunk expects at least a 1-dimensional
-  tensor" (a 0-dim batch scalar cannot be split across GPUs). device_map={'': 0} pins
-  the MODEL but does NOT stop the Trainer's DataParallel — only limiting visible
-  devices does.
+- HARDWARE PLACEMENT (multi-GPU box): keep ALL GPUs visible — do NOT set
+  CUDA_VISIBLE_DEVICES to a single id. The experiment runs every condition in ONE
+  process; hiding a GPU to make one condition single-GPU permanently blocks LATER
+  conditions from sharding (env is process-wide, fixed before torch import). Choose
+  placement PER MODEL LOAD at runtime, purely by whether the task's PEAK VRAM fits one
+  card:
+    * Estimate peak VRAM REALISTICALLY — include training activations + optimizer +
+      any reference-model copy (RL), not just weights. A weight-only estimate badly
+      under-counts: e.g. GRPO generation + log-prob over long completions needs far
+      more than the 4-bit weights imply (measure/anchor empirically if unsure).
+    * fits one device → device_map={'': 0} (single GPU — fastest: no per-step
+      cross-GPU transfer).
+    * does NOT fit → device_map='auto' (shard across all visible GPUs).
+  This decision is the SAME for training and inference (a large-batch/long-seq eval
+  that needs >24GB shards too). Print it: `PLACEMENT: single_gpu est_peak=... free=...`
+  or `PLACEMENT: sharded(auto) est_peak=... free=...`.
+  DataParallel guard (CRITICAL): a single-GPU model + a HuggingFace/TRL Trainer with
+  >1 GPU visible auto-wraps in torch.nn.DataParallel → crash "chunk expects at least a
+  1-dimensional tensor". Do NOT fix this by hiding GPUs (that blocks sharding). Instead,
+  after building the Trainer for a single-GPU model, set `trainer.args._n_gpu = 1`.
+  Sharded (device_map='auto') models are model-parallel, so Trainer skips DataParallel
+  automatically — no _n_gpu needed. Plain inference (model.generate, no Trainer) has no
+  DataParallel risk at all.
+- RL/GRPO GENERATION SPEED & MEMORY (the single biggest GRPO cost is generation):
+    * Generation MUST use the KV cache. gradient_checkpointing forces use_cache=False,
+      which turns each GRPO decode into an O(n²) recompute (measured ~7x slower: ~950s
+      vs ~130s per step). For the GRPO/RL trainer, set gradient_checkpointing=False AND
+      `model.config.use_cache = True` after building the model; rely on multi-GPU
+      sharding (above) for the memory headroom instead of gradient checkpointing.
+      (Keep gradient_checkpointing=True for plain SFT, which does not generate during
+      training.)
+    * When RESUMING QLoRA training from a saved adapter (load base in 4-bit, then
+      `PeftModel.from_pretrained(base, ckpt, is_trainable=True)`), you MUST call
+      `prepare_model_for_kbit_training(base, use_gradient_checkpointing=<as above>)`
+      BEFORE attaching the adapter — same as the fresh-train path — or backward fails
+      with "element 0 of tensors does not require grad".
+    * trl/transformers Trainer subclasses (GRPOTrainer, SFTTrainer) take
+      `processing_class=tokenizer`, NOT `tokenizer=` (deprecated in transformers 4.46+;
+      passing tokenizer= raises an unexpected-keyword error on newer trl).
+    * GRPOTrainer requires trl>=0.14 (it did not exist before). Pin the trl version
+      that provides the API you call (e.g. `trl==0.14.0`) in the declared pip deps —
+      `trl>=0.11` may resolve to an installed older wheel that lacks GRPOTrainer.
+- DISABLE torch.compile (set `os.environ.setdefault("TORCHDYNAMO_DISABLE","1")` at the
+  top): for batch-1 autoregressive generation it gave no measurable speedup and
+  triggered inductor recompilation storms (16+ compile workers, multi-minute stalls).
+  Eager is predictable.
+- NO DEAD RE-INITIALIZATION: never reassign a variable to None (or re-default it)
+  AFTER you have computed its real value on the line(s) above — e.g. computing
+  `data = ds[split]` then `data = None` right before `len(data)`. This stray-clobber
+  bug recurs and crashes at runtime (len(None)); the static validator cannot catch it.
+- CACHE KEYS MUST INCLUDE EVERY VARIANT FLAG: when caching expensive artifacts
+  (features, checkpoints) that differ per ablation, put ALL distinguishing flags in the
+  cache filename (e.g. proxy_features_seed{n}_{full|hidden}.npz). If a "drop a feature"
+  ablation can reuse a superset cache, SLICE the cached array to the needed columns
+  rather than reloading a dim-mismatched file (which crashes the reward/forward with a
+  shape-mismatch).
 - REWARD DEAD-ZONE GUARD (RL only): if the reward is constant across ALL generations
   for ~20 consecutive steps (e.g. every sample scores -1), the policy gradient is
   zero and further steps are pure waste — print
@@ -470,8 +510,10 @@ IMPORTANT CONSTRAINTS:
 - SMOKE-TEST HOOK: at the very top of main(), check `if os.environ.get("ARC_SMOKE"):`
   and shrink EVERY cost knob to the minimum that still exercises each code path —
   all conditions but seeds=[0] only, train steps/epochs → 1, eval/proxy/collection
-  sample counts → 2, RL steps → 1, dataset subset → a few rows. The goal: run ALL
-  conditions end-to-end (train 1 step, eval 2 samples, GRPO 1 step, oracle) in 1-2
+  sample counts → 2, RL steps → 1, dataset subset → a few rows, AND generation length
+  (max_completion_length / eval max_new_tokens) → small (e.g. 64) — generation is the
+  dominant cost, so a full-length cap makes the smoke needlessly slow. The goal: run
+  ALL conditions end-to-end (train 1 step, eval 2 samples, GRPO 1 step, oracle) in 1-2
   minutes so a pre-flight catches runtime crashes (import errors, NoneType, shape
   mismatches, Trainer misconfig) before the multi-hour real run. ARC_SMOKE must
   still touch every condition and the real tools/oracle — it only shrinks sizes.
