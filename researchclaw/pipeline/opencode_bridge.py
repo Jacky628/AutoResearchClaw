@@ -339,6 +339,14 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   cap, output is truncated/incomplete, validity collapses to ~0 (full-scale only —
   a 1-epoch smoke is under-trained so eos_frac=0 there too and CANNOT reveal this;
   it only surfaces after real training). This silently invalidated a whole run.
+  TRUNCATE IN TOKENS, NOT CHARS, leaving room for EOS: tokenize then keep the first
+  (max_seq_length - few) tokens and append EOS — char-based truncation (e.g.
+  code[:2000]) can still exceed max_seq_length in TOKENS, so SFTTrainer's
+  max_seq_length truncation drops the trailing EOS (this is exactly how an
+  EOS-appended fix can still fail). Also measure the REAL token-length of the data
+  (it can be far longer than a char count implies — e.g. DeepCAD CadQuery programs
+  ran ~795 median / ~1751 p95 tokens) and set max_seq_length / max_completion_length
+  with headroom over it, or accept that long sequences train as truncated prefixes.
   ASSERT IT AT BUILD TIME (this is the only check that catches the bug regardless
   of scale): right after building the training dataset, assert that a sample's
   last token == the EOS id, e.g. `assert ds[0]["input_ids"][-1] == tokenizer.eos_token_id`
