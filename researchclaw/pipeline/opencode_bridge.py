@@ -309,12 +309,17 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   prefix — do NOT rely on EOS alone. An under-trained model frequently emits NO EOS
   at all (eos_frac≈0, truncated_frac≈1.0); stripping "everything after EOS" then does
   nothing and the full cap-length ramble is scored INVALID. So implement a real
-  program-boundary extractor that, EVEN WHEN NO EOS IS PRESENT, walks the generation
-  and returns the longest leading prefix that parses/executes as a complete program
-  (e.g. last syntactically-valid statement / matching close / for CAD: up to the final
-  successful Workplane op). Apply this in EVERY validity-eval path, not just one
-  helper. Scoring the raw full-length generation is a bug that silently zeroes a model
-  whose early output was fine.
+  program-boundary extractor that, EVEN WHEN NO EOS IS PRESENT, returns the FIRST
+  COMPLETE program — NOT the "longest syntactically-compiling prefix". CRITICAL: a
+  model that doesn't emit EOS keeps going and appends DEGENERATE-but-syntactically-
+  valid continuations (e.g. it re-assigns the result var: `result = (...valid...)`
+  then `result = (result...extrude(0.0))` — a zero-size op). The longest-COMPILING
+  prefix includes those, and EXECUTING the whole then fails (e.g. CAD throws a
+  construction error) even though the FIRST block was a valid solid — silently
+  zeroing validity. So extract the first complete program: parse and keep up to the
+  FIRST top-level assignment of the result variable (drop later re-assignments), or
+  equivalently the longest prefix that EXECUTES to a valid object (not just compiles).
+  Apply this in EVERY validity-eval path, not just one helper.
 - EVAL GENERATION EFFICIENCY (eval/proxy/RL generation dominates wall-clock when the
   model does not emit EOS — every sample runs to the cap; run-4 eval was ~90s/sample,
   ~75 min for 50): (1) cap eval/collection generation at ~p95 of completion length
