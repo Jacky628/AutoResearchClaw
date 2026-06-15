@@ -459,6 +459,17 @@ or stdout are invisible until the very end and are LOST on a crash):
   to clear a lenient check) and whether the oracle labeled individual samples
   correctly — a non-zero validity_rate with garbage generations is a silent
   failure that only per-sample dumps catch.
+- IN-TRAINING CANARY PROBE (catch training-QUALITY bugs WITHOUT waiting hours for
+  post-training eval): add a TrainerCallback that on_epoch_end generates ~5 held-out
+  prompts with the in-progress model and prints `CANARY: epoch=<n> eos_frac=<x>
+  validity=<y>` (run the SAME extractor + oracle the eval uses; temporarily set
+  use_cache=True for the probe). Decreasing loss does NOT prove the model is learning
+  the right thing — it can loop / never emit EOS / produce invalid output while loss
+  looks fine. If validity is still 0 after a FULL epoch, that's a strong signal of a
+  training/eval bug (EOS not learned, wrong extractor, bad data) → set
+  control.should_training_stop = True and surface it, rather than burning the rest of
+  a multi-hour training run. This is the layer between the pre-flight smoke (can't see
+  training quality) and the final eval (too late).
 - Key checkpoint values (e.g. the ORACLE_CALIBRATION line) must ALSO be recorded in
   progress.json (e.g. under a "calibration" key), not only printed.
 - These files are IN ADDITION to stdout prints and the final results.json, never a
