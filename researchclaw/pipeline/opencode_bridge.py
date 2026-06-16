@@ -320,6 +320,16 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   FIRST top-level assignment of the result variable (drop later re-assignments), or
   equivalently the longest prefix that EXECUTES to a valid object (not just compiles).
   Apply this in EVERY validity-eval path, not just one helper.
+- THE COMPLETION IS HEADLESS — reconstruct the FULL program (prompt + completion) before you
+  extract/score. When generation decodes only the NEW tokens (out[:, prompt_len:]), the program
+  HEAD lives in the PROMPT, not the completion: for a prefix→completion task the prompt holds the
+  imports and the result assignment (e.g. `result = cq.Workplane(...)`) and the model emits only
+  the continuation. The boundary extractor keys on the FIRST top-level `result = ...` assignment,
+  so handing it the completion ALONE is a headless fragment with NO result-assignment → it finds
+  no complete program → validity 0 even for a WORKING model (this silently zeroed a whole run).
+  So build `full = prompt + decoded_completion` and run the extractor + oracle on `full`. Any
+  in-training CANARY probe MUST extract on the SAME prompt+completion the eval does, or the canary
+  and the real eval disagree and you trust the wrong one.
 - EVAL GENERATION EFFICIENCY (eval/proxy/RL generation dominates wall-clock when the
   model does not emit EOS — every sample runs to the cap; run-4 eval was ~90s/sample,
   ~75 min for 50): (1) cap eval/collection generation at ~p95 of completion length
