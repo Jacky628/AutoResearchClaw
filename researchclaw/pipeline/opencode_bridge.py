@@ -485,6 +485,17 @@ or stdout are invisible until the very end and are LOST on a crash):
   control.should_training_stop = True and surface it, rather than burning the rest of
   a multi-hour training run. This is the layer between the pre-flight smoke (can't see
   training quality) and the final eval (too late).
+- REWARD CANARY (RL/GRPO only — the analog of the eval canary for the REWARD path): before
+  the RL trainer.train(), feed a few KNOWN-VALID ground-truth programs to the reward fn BOTH
+  the way the RL trainer will call it (prompts + completions) AND headless (completion only),
+  and print `REWARD_CANARY: gt_full_reward_mean=<x> gt_headless_reward_mean=<y>`. The reward
+  VALUE alone cannot tell a headless-extraction BUG (reward floored because the program HEAD
+  lives in the PROMPT, not the completion) from an UNDERTRAINED model (also low reward) — both
+  look like a dead reward. But a reward that IGNORES the prompt returns byte-IDENTICAL scores
+  with and without it (full == headless); a correctly-wired reward uses the prompt, so the full
+  valid program and the headless fragment score DIFFERENTLY. If full == headless on known-valid
+  programs, the reward never sees the program head → skip/abort RL instead of burning hours on a
+  dead signal. (Undertrained-but-correctly-wired rewards still differ, so this won't false-abort.)
 - Key checkpoint values (e.g. the ORACLE_CALIBRATION line) must ALSO be recorded in
   progress.json (e.g. under a "calibration" key), not only printed.
 - These files are IN ADDITION to stdout prints and the final results.json, never a
