@@ -329,7 +329,12 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   no complete program → validity 0 even for a WORKING model (this silently zeroed a whole run).
   So build `full = prompt + decoded_completion` and run the extractor + oracle on `full`. Any
   in-training CANARY probe MUST extract on the SAME prompt+completion the eval does, or the canary
-  and the real eval disagree and you trust the wrong one.
+  and the real eval disagree and you trust the wrong one. THIS ALSO APPLIES TO RL/GRPO REWARD
+  FUNCTIONS: a TRL reward_func receives the completion HEADLESS (the prompt is passed separately as
+  `prompts`), so inside the reward you MUST `full = prompts[i] + completions[i]` before extract +
+  oracle/proxy — otherwise the headless fragment has no result-assignment, the oracle scores every
+  sample invalid, and the reward sticks at the floor (a DEAD reward signal that silently kills RL).
+  Likewise a proxy/learned reward must be SCORED on the same full-program form it was TRAINED on.
 - EVAL GENERATION EFFICIENCY (eval/proxy/RL generation dominates wall-clock when the
   model does not emit EOS — every sample runs to the cap; run-4 eval was ~90s/sample,
   ~75 min for 50): (1) cap eval/collection generation at ~p95 of completion length
