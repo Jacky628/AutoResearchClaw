@@ -496,6 +496,9 @@ or stdout are invisible until the very end and are LOST on a crash):
   valid program and the headless fragment score DIFFERENTLY. If full == headless on known-valid
   programs, the reward never sees the program head → skip/abort RL instead of burning hours on a
   dead signal. (Undertrained-but-correctly-wired rewards still differ, so this won't false-abort.)
+  When you DO bail out of RL this way, first FREE the already-loaded training model (del model +
+  torch.cuda.empty_cache()) before returning — the normal end-of-RL cleanup is downstream of the
+  bail-out point, so skipping it leaks the model's VRAM and the NEXT condition OOMs on load.
 - Key checkpoint values (e.g. the ORACLE_CALIBRATION line) must ALSO be recorded in
   progress.json (e.g. under a "calibration" key), not only printed.
 - These files are IN ADDITION to stdout prints and the final results.json, never a
