@@ -367,6 +367,17 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   (it can be far longer than a char count implies — e.g. DeepCAD CadQuery programs
   ran ~795 median / ~1751 p95 tokens) and set max_seq_length / max_completion_length
   with headroom over it, or accept that long sequences train as truncated prefixes.
+  ALSO — THE PAD TOKEN MUST DIFFER FROM THE EOS TOKEN (a second way an EOS-appended fix
+  silently fails): the default HF `DataCollatorForLanguageModeling` (SFTTrainer's default
+  collator) masks labels BY VALUE — `labels[labels == pad_token_id] = -100` — so if
+  pad_token == eos_token (the Qwen default: both `<|endoftext|>`), the REAL trailing EOS
+  label is masked to -100 too and the model gets NO gradient on EOS → never learns to stop
+  even though EOS is in the data. Force a DISTINCT existing special token as pad (e.g.
+  `<|fim_pad|>`), do NOT `tokenizer.pad_token = tokenizer.eos_token`; an in-vocab token
+  needs no embedding resize. (A from-scratch model with a position/attention-based collator
+  that pads with a reserved id != EOS is already fine — this only bites value-based collators.)
+  Note the build-time EOS assertion below does NOT catch this (the data still ends in EOS;
+  the masking happens in the collator), so it must be guarded separately.
   ASSERT IT AT BUILD TIME (this is the only check that catches the bug regardless
   of scale): right after building the training dataset, assert that a sample's
   last token == the EOS id, e.g. `assert ds[0]["input_ids"][-1] == tokenizer.eos_token_id`
