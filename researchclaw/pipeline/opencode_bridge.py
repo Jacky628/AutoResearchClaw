@@ -443,6 +443,13 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
       sharding (above) for the memory headroom instead of gradient checkpointing.
       (Keep gradient_checkpointing=True for plain SFT, which does not generate during
       training.)
+    * SET gradient_accumulation_steps EXPLICITLY on the GRPO trainer — do NOT leave it
+      unset. TRL's GRPOConfig DEFAULTS IT TO 8 (not 1), and GRPO generates once PER
+      accumulation micro-step, so the unset default silently generates 8× per optimizer
+      step (~8× slower: measured 725s/step at grad_accum=8 vs ~95s/generation). Put it in
+      your HYPERPARAMETERS dict (e.g. grpo_grad_accum) so it is visible and can't be lost
+      in a regen. Pick the value as the GRPO batch knob (grad_accum × num_generations =
+      completions per update; 1×4..2×4 is a reasonable batch), not by accident.
     * When RESUMING QLoRA training from a saved adapter (load base in 4-bit, then
       `PeftModel.from_pretrained(base, ckpt, is_trainable=True)`), you MUST call
       `prepare_model_for_kbit_training(base, use_gradient_checkpointing=<as above>)`
