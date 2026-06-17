@@ -389,6 +389,24 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   More generally, guard correctness PROPERTIES that an under-trained smoke run
   cannot reveal (EOS-in-data, label balance, feature dims) with cheap static
   assertions on the prepared data, not by inspecting tiny-scale metrics.
+- ADDED-VOCAB / TOKENIZATION ABLATIONS (when a hypothesis claims a special TOKEN
+  representation of some signal helps): (1) add the new tokens as REAL vocab tokens —
+  `tokenizer.add_tokens([...], special_tokens=True)` then
+  `model.resize_token_embeddings(len(tokenizer))` — NOT as plain-text comments (those
+  tokenize to subwords with no dedicated embedding, so the "token" arm is a silent no-op).
+  (2) Train ONLY the new embedding rows: keep `modules_to_save=["embed_tokens","lm_head"]`
+  so the resized rows are SAVED in the adapter, but register a gradient hook that zeros the
+  grad of all pre-existing rows (existing embeddings must not drift/forget on a small dataset).
+  (3) To make the claim FAIR, compare the dedicated-TOKEN arm against a PLAIN-TEXT arm carrying
+  the SAME signal (isolates representation, not whether the signal is present), plus a no-signal
+  baseline; an arm that masks the signal at inference (trained-with, eval-without) shows the model
+  uses it. (4) Derive the auxiliary signal from GROUND-TRUTH structure (e.g. geometry), NOT from
+  the target being generated, or the ablation is circular. (5) EVAL-TIME VOCAB LOAD: a checkpoint
+  trained with added tokens has a RESIZED embed_tokens/lm_head in its adapter; before
+  `PeftModel.from_pretrained`, resize the BASE to match (add the tokens + resize) or it
+  dimension-mismatches. (6) If a downstream RL/GRPO stage does not itself need the added vocab,
+  branch it from the NORMAL-vocab checkpoint — avoids the resize/representation entanglement and
+  keeps that stage's attribution clean.
 - FREE THE TRAINING MODEL BEFORE EVAL: after training finishes and the adapter is
   saved, `del trainer, model; gc.collect(); torch.cuda.empty_cache()` BEFORE the
   eval load. Otherwise the training model stays resident (~12GB), the eval load
