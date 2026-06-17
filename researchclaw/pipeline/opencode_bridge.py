@@ -436,13 +436,14 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   automatically — no _n_gpu needed. Plain inference (model.generate, no Trainer) has no
   DataParallel risk at all.
 - RL/GRPO GENERATION SPEED & MEMORY (the single biggest GRPO cost is generation):
-    * Generation MUST use the KV cache. gradient_checkpointing forces use_cache=False,
-      which turns each GRPO decode into an O(n²) recompute (measured ~7x slower: ~950s
-      vs ~130s per step). For the GRPO/RL trainer, set gradient_checkpointing=False AND
-      `model.config.use_cache = True` after building the model; rely on multi-GPU
-      sharding (above) for the memory headroom instead of gradient checkpointing.
-      (Keep gradient_checkpointing=True for plain SFT, which does not generate during
-      training.)
+    * Keep gradient_checkpointing=False for the GRPO/RL trainer (set it AND
+      `model.config.use_cache = True` after building the model; rely on multi-GPU sharding
+      for the memory headroom instead). gradient_checkpointing recomputes activations in the
+      backward and run-5 measured ~7× (~950s→~130s/step) from turning it off. NB: model.generate
+      uses the KV cache by DEFAULT, so generation in isolation is ~the same with use_cache
+      True/False (measured 95 vs 96s for 4×768 tokens) — the dominant GRPO wall-clock lever is
+      actually gradient_accumulation_steps (next point), not the generation cache.
+      (Keep gradient_checkpointing=True for plain SFT, which does not generate during training.)
     * SET gradient_accumulation_steps EXPLICITLY on the GRPO trainer — do NOT leave it
       unset. TRL's GRPOConfig DEFAULTS IT TO 8 (not 1), and GRPO generates once PER
       accumulation micro-step, so the unset default silently generates 8× per optimizer
@@ -564,6 +565,11 @@ later conditions out of the time budget):
   progress.json). If the experiment plan says the condition builds on a previous
   checkpoint, an unexpected RETRAIN is a BUG — fail loudly rather than silently
   retraining.
+- CONVERSELY, DISTINCT conditions/ablations MUST write to DISTINCT checkpoint paths —
+  parametrize the save path by the ABLATION VARIANT, not just the seed. If two variants
+  (e.g. a full-feature vs a hidden-only reward) share one path, the second silently REUSES
+  the first's checkpoint (no RETRAIN, no error) and collapses into a DUPLICATE of the first
+  — the ablation measures nothing. A trained-but-unused per-variant path helper is a red flag.
 
 TIME-BUDGET GRACEFUL DEGRADATION (CRITICAL — a hard crash at the budget boundary
 loses EVERY result computed before it):
