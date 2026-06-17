@@ -364,8 +364,9 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   code[:2000]) can still exceed max_seq_length in TOKENS, so SFTTrainer's
   max_seq_length truncation drops the trailing EOS (this is exactly how an
   EOS-appended fix can still fail). Also measure the REAL token-length of the data
-  (it can be far longer than a char count implies — e.g. DeepCAD CadQuery programs
-  ran ~795 median / ~1751 p95 tokens) and set max_seq_length / max_completion_length
+  (it can be far longer than a char count implies — measure on the REAL data with the
+  REAL tokenizer; e.g. DeepCAD CadQuery programs measured ~168 median / ~540 p95 /
+  ~862 p99 / ~1000 max tokens over 500 samples) and set max_seq_length / max_completion_length
   with headroom over it, or accept that long sequences train as truncated prefixes.
   ALSO — THE PAD TOKEN MUST DIFFER FROM THE EOS TOKEN (a second way an EOS-appended fix
   silently fails): the default HF `DataCollatorForLanguageModeling` (SFTTrainer's default
