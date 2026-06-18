@@ -401,7 +401,15 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   the SAME signal (isolates representation, not whether the signal is present), plus a no-signal
   baseline; an arm that masks the signal at inference (trained-with, eval-without) shows the model
   uses it. (4) Derive the auxiliary signal from GROUND-TRUTH structure (e.g. geometry), NOT from
-  the target being generated, or the ablation is circular. (5) EVAL-TIME VOCAB LOAD: a checkpoint
+  the target being generated, or the ablation is circular. (4b) The signal must be HIGH-ENTROPY
+  (varied across samples) AND not trivially inferable from the prompt prefix — else both arms
+  learn a near-constant and the token-vs-text + masked comparisons go NULL. Real failure: on
+  DeepCAD (axis-aligned rectangular prisms) trivial geometric constraints (parallel/horizontal/
+  vertical/perpendicular) fired together on ~57% of samples as one identical set → no signal to
+  represent. Fix: derive DESIGN-INTENT / construction structure (cut/join, hole, multi-part, two-
+  sided, thin/tall, ngon, ...) from GT operation+topology instead; conditioning on user-specifiable
+  design intent is the intended capability (not leakage). VERIFY the derived-tag distribution before
+  training: no single tag > ~50%, empty rate low, many distinct combinations. (5) EVAL-TIME VOCAB LOAD: a checkpoint
   trained with added tokens has a RESIZED embed_tokens/lm_head in its adapter; before
   `PeftModel.from_pretrained`, resize the BASE to match (add the tokens + resize) or it
   dimension-mismatches. (6) If a downstream RL/GRPO stage does not itself need the added vocab,
