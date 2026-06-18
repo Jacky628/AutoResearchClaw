@@ -418,10 +418,16 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   conditions from sharding (env is process-wide, fixed before torch import). Choose
   placement PER MODEL LOAD at runtime, purely by whether the task's PEAK VRAM fits one
   card:
-    * Estimate peak VRAM REALISTICALLY — include training activations + optimizer +
-      any reference-model copy (RL), not just weights. A weight-only estimate badly
-      under-counts: e.g. GRPO generation + log-prob over long completions needs far
-      more than the 4-bit weights imply (measure/anchor empirically if unsure).
+    * Estimate peak VRAM REALISTICALLY — include training activations + optimizer + any
+      reference-model copy (RL), not just weights (weight-only under-counts). THE SUBTLE TRAP:
+      this estimate must be the SINGLE-GPU requirement — the peak if the task ran on ONE card —
+      NOT the sharded per-card half you observe WHILE it is already sharded (those differ ~2×).
+      (Real GRPO at completion=768: ~16GB per card while sharded, but ~23GB on a single GPU →
+      it OOMs a 24GB card and MUST shard. A re-anchor to that 16GB per-card figure wrongly
+      picked single-GPU and OOM'd mid-step.) If unsure, measure the single-GPU peak directly
+      (force device_map={'':0}, run 1-2 steps, read torch.cuda.max_memory_allocated) — but be
+      ready for an OOM there, and treat that as "shards". Don't ship a physical guess that can
+      be off several-fold in EITHER direction.
     * fits one device → device_map={'': 0} (single GPU — fastest: no per-step
       cross-GPU transfer).
     * does NOT fit → device_map='auto' (shard across all visible GPUs).
