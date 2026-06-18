@@ -524,11 +524,13 @@ or stdout are invisible until the very end and are LOST on a crash):
   validity=<y>` (run the SAME extractor + oracle the eval uses; temporarily set
   use_cache=True for the probe). Decreasing loss does NOT prove the model is learning
   the right thing — it can loop / never emit EOS / produce invalid output while loss
-  looks fine. If validity is still 0 after a FULL epoch, that's a strong signal of a
-  training/eval bug (EOS not learned, wrong extractor, bad data) → set
-  control.should_training_stop = True and surface it, rather than burning the rest of
-  a multi-hour training run. This is the layer between the pre-flight smoke (can't see
-  training quality) and the final eval (too late).
+  looks fine. ABORT (control.should_training_stop = True) ONLY on the real bug signature:
+  validity==0 AND eos_frac==0 after a full epoch (the model never learned to STOP) — do NOT
+  abort on validity==0 alone. A small probe (e.g. 5 samples) reads 0/5 by chance even at ~20%
+  true validity (0.8^5≈33%), so validity==0 with eos_frac>0 is just early-training noise, not a
+  bug, and aborting there falsely kills a healthy condition. Surface it rather than burning the
+  rest of a multi-hour run. This is the layer between the pre-flight smoke (can't see training
+  quality) and the final eval (too late).
 - REWARD CANARY (RL/GRPO only — the analog of the eval canary for the REWARD path): before
   the RL trainer.train(), feed a few KNOWN-VALID ground-truth programs to the reward fn BOTH
   the way the RL trainer will call it (prompts + completions) AND headless (completion only),
