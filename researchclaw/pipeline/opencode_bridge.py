@@ -516,6 +516,15 @@ or stdout are invisible until the very end and are LOST on a crash):
 - partial_results.jsonl: the moment ONE (condition, seed) evaluation finishes,
   append its result as one JSON line ({"condition": ..., "seed": ..., "<metric>": ...})
   and flush. Never accumulate all results only in memory until the final write.
+- NUMPY-SAFE json.dumps (or the FINAL aggregation crashes after hours): give EVERY
+  json.dumps that writes results/progress a `default=` fallback that converts numpy
+  scalars/arrays to native (`lambda o: o.tolist() if hasattr(o,'tolist') else (o.item()
+  if hasattr(o,'item') else str(o))` — tolist FIRST, since arrays also have .item() but
+  it raises on size>1). np.float64 is a float subclass so it serializes silently, but
+  np.int64 is NOT an int subclass — a stray np.int64 value (np.sum/argmax/bincount) or
+  np.int64 dict KEY raises `TypeError: ... not JSON serializable` only at write time,
+  i.e. after the whole run. (default= covers values; if you ever key a dict by np ints,
+  stringify the keys too.)
 - AUDIT SAMPLE DUMP (content-auditability — aggregate metrics alone are NOT
   auditable): during each (condition, seed) eval, save a SMALL sample (e.g. the
   first 10-20) of the ACTUAL model outputs with their oracle verdict to
