@@ -414,7 +414,14 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   `PeftModel.from_pretrained`, resize the BASE to match (add the tokens + resize) or it
   dimension-mismatches. (6) If a downstream RL/GRPO stage does not itself need the added vocab,
   branch it from the NORMAL-vocab checkpoint — avoids the resize/representation entanglement and
-  keeps that stage's attribution clean.
+  keeps that stage's attribution clean. (7) STRIP THE TOKEN HEADER BEFORE PARSE/EXECUTE: if the
+  dedicated tokens are NOT valid syntax in the generated target language (e.g. `<CONSTRAINTS>
+  <CUT> </CONSTRAINTS>` prepended to Python/CadQuery), the eval extractor/validator MUST remove
+  that header before compiling/running the output. Left in, it makes the whole output fail to
+  parse, so the TOKEN arm scores a FALSE ZERO while the plain-TEXT arm (a real comment, e.g.
+  `# design intent: ...`) parses fine — silently INVERTING the token-vs-text comparison into the
+  wrong conclusion. A boundary extractor that "keeps the longest compiling prefix" returns the
+  whole non-compiling string here; strip the header (split on the closing delimiter) first.
 - FREE THE TRAINING MODEL BEFORE EVAL: after training finishes and the adapter is
   saved, `del trainer, model; gc.collect(); torch.cuda.empty_cache()` BEFORE the
   eval load. Otherwise the training model stays resident (~12GB), the eval load
