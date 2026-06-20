@@ -397,6 +397,11 @@ EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the
   (2) Train ONLY the new embedding rows: keep `modules_to_save=["embed_tokens","lm_head"]`
   so the resized rows are SAVED in the adapter, but register a gradient hook that zeros the
   grad of all pre-existing rows (existing embeddings must not drift/forget on a small dataset).
+  (2b) WARM-START the new rows from the MEAN subword embedding of each token's natural-language
+  meaning (e.g. <CUT> <- mean(embed("cut"))), NOT random init. Otherwise the TOKEN arm cold-starts
+  from noise while the PLAIN-TEXT arm reuses the pretrained semantics of "cut"/"hole" for free —
+  so a null/inverted token-vs-text result is confounded by data-efficiency/initialization, not the
+  representation it claims to test. Warm-start makes both arms start with the same word semantics.
   (3) To make the claim FAIR, compare the dedicated-TOKEN arm against a PLAIN-TEXT arm carrying
   the SAME signal (isolates representation, not whether the signal is present), plus a no-signal
   baseline; an arm that masks the signal at inference (trained-with, eval-without) shows the model
