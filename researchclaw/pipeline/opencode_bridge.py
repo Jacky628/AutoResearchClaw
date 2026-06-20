@@ -525,6 +525,16 @@ or stdout are invisible until the very end and are LOST on a crash):
   np.int64 dict KEY raises `TypeError: ... not JSON serializable` only at write time,
   i.e. after the whole run. (default= covers values; if you ever key a dict by np ints,
   stringify the keys too.)
+- EVAL/TEST LEAKAGE (a published "test" split is NOT automatically held out): dedup the
+  eval set against the FULL train set by content hash BEFORE trusting any validity number,
+  and assert the overlap is 0. Use an exact hash AND a coordinate-rounded "loose" hash (parse
+  the record, round floats to ~2dp, re-serialize sorted) to also drop float-noise near-dupes.
+  Real failure: wanhin/deepcad-completion-sft's test split shares ~30% EXACT (~40% incl.
+  coordinate-noise) duplicates with train (the dataset itself is ~63% internal dupes) — eval
+  on those silently inflates validity by memorization, indefensible at review. Filter test to
+  the train-disjoint subset (keep enough for eval_subset_size); note residual translation/
+  rotation/scale near-dups as a limitation (full geometric canonicalization is a separate, hard,
+  label-free task — not worth it vs exact+loose).
 - AUDIT SAMPLE DUMP (content-auditability — aggregate metrics alone are NOT
   auditable): during each (condition, seed) eval, save a SMALL sample (e.g. the
   first 10-20) of the ACTUAL model outputs with their oracle verdict to
