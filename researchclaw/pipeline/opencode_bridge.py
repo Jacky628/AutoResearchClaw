@@ -525,6 +525,19 @@ or stdout are invisible until the very end and are LOST on a crash):
   `os.replace`) at least once per epoch AND roughly every minute of training, e.g.
   {"phase": "train", "condition": "<name>", "seed": 0, "step": 120, "total_steps": 500,
    "latest_metric": 0.41, "updated_at": "<iso8601>"}.
+- METRIC MUST MATCH THE HYPOTHESIS AXIS: if the hypothesis is that a conditioning signal makes
+  the output MATCH a specified intent, the HEADLINE metric must measure intent-ADHERENCE (does the
+  output exhibit the conditioned features), not just task success (e.g. "is it a valid solid").
+  Those axes are orthogonal — conditioning can work perfectly (output matches intent) while the
+  success metric is unchanged, so a success-only metric reads NULL and you wrongly conclude the
+  conditioning is useless. Measure adherence = F1 of (features detected in the output) vs (intended
+  features), as PRIMARY; keep task-success as secondary.
+- CONDITION ON WHAT'S IN THE TRAINING TARGET, NOT THE NOMINAL SOURCE: derive the conditioning tags
+  from the ACTUAL target the model learns (here: the transpiled CadQuery code), not an upstream
+  nominal source (the raw JSON). A lossy transpiler/preprocessor can silently drop features (holes,
+  cuts, arcs → simplified away), so source-derived tags would condition on PHANTOMS absent from the
+  target — noise the model can't learn. Detect features from the target artifact with ONE detector,
+  and use that SAME detector for both the header and the adherence metric.
 - partial_results.jsonl: the moment ONE (condition, seed) evaluation finishes,
   append its result as one JSON line ({"condition": ..., "seed": ..., "<metric>": ...})
   and flush. Never accumulate all results only in memory until the final write.
