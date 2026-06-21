@@ -556,6 +556,10 @@ or stdout are invisible until the very end and are LOST on a crash):
   np.int64 dict KEY raises `TypeError: ... not JSON serializable` only at write time,
   i.e. after the whole run. (default= covers values; if you ever key a dict by np ints,
   stringify the keys too.)
+- NOT-MEASURED METRIC PLACEHOLDER = None, NOT 0.0: when a metric is seeded before it is
+  computed (e.g. set in an initial dict, filled in after a stage), default it to None — a 0.0
+  placeholder reads as a real measured zero if the run is budget-truncated before the metric is
+  filled in, silently misreporting "agreement/score = 0" when the truth is "not measured".
 - EVAL/TEST LEAKAGE (a published "test" split is NOT automatically held out): dedup the
   eval set against the FULL train set by content hash BEFORE trusting any validity number,
   and assert the overlap is 0. Use an exact hash AND a coordinate-rounded "loose" hash (parse
