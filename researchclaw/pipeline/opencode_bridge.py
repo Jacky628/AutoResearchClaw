@@ -538,6 +538,12 @@ or stdout are invisible until the very end and are LOST on a crash):
   cuts, arcs → simplified away), so source-derived tags would condition on PHANTOMS absent from the
   target — noise the model can't learn. Detect features from the target artifact with ONE detector,
   and use that SAME detector for both the header and the adherence metric.
+- PAIRED arm comparison (the cheap power fix for small runs): when every arm evaluates the SAME
+  eval samples in the SAME order, compare arms PAIRED (match by sample index/seed) with a signed-
+  rank test, NOT by their per-condition means. Pairing removes between-sample difficulty variance,
+  so it is dramatically more powerful — it can resolve an effect from a handful of seeds/samples
+  that an unpaired mean-vs-mean comparison (with its wide CIs) calls noise. Log per-sample (intended
+  vs produced features + per-sample score) to a JSONL so the paired test can run offline.
 - partial_results.jsonl: the moment ONE (condition, seed) evaluation finishes,
   append its result as one JSON line ({"condition": ..., "seed": ..., "<metric>": ...})
   and flush. Never accumulate all results only in memory until the final write.
