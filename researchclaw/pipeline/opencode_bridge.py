@@ -560,6 +560,14 @@ or stdout are invisible until the very end and are LOST on a crash):
   computed (e.g. set in an initial dict, filled in after a stage), default it to None — a 0.0
   placeholder reads as a real measured zero if the run is budget-truncated before the metric is
   filled in, silently misreporting "agreement/score = 0" when the truth is "not measured".
+- AUTO PER-CONDITION QUALITY GATE (long multi-condition runs): after EACH condition's result is
+  recorded, automatically run a quality check and log a one-line verdict (PASS/WARN/FAIL) +
+  persist it to a flags file. Tier it: SOFT signals (validity==0/1.0, adherence NaN/out-of-range,
+  degenerate agreement, cross-arm direction reversed) only WARN+log — they're usually results not
+  bugs, auto-aborting false-kills a multi-hour run; STRUCTURAL failures (checkpoint not saved after
+  training, core metric key missing) FAIL loudly. Keep the check a pure stdlib function so it's
+  unit-tested and reused by an out-of-band status script. Don't silently let a structurally-failed
+  dependency checkpoint poison downstream conditions that reuse it.
 - EVAL/TEST LEAKAGE (a published "test" split is NOT automatically held out): dedup the
   eval set against the FULL train set by content hash BEFORE trusting any validity number,
   and assert the overlap is 0. Use an exact hash AND a coordinate-rounded "loose" hash (parse
