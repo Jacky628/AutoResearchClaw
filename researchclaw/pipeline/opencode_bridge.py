@@ -559,7 +559,11 @@ or stdout are invisible until the very end and are LOST on a crash):
 - NOT-MEASURED METRIC PLACEHOLDER = None, NOT 0.0: when a metric is seeded before it is
   computed (e.g. set in an initial dict, filled in after a stage), default it to None — a 0.0
   placeholder reads as a real measured zero if the run is budget-truncated before the metric is
-  filled in, silently misreporting "agreement/score = 0" when the truth is "not measured".
+  filled in, silently misreporting "agreement/score = 0" when the truth is "not measured". Same
+  for a RATE over an EMPTY SUBGROUP: `valid / max(total, 1)` returns 0.0 when total==0, which
+  reads as "0% of that subgroup passed" when the truth is "no samples in that subgroup". Use
+  `valid/total if total>0 else None` for every stratified/subgroup rate (e.g. per-difficulty
+  validity), so an empty bucket reports None, not a fake zero. (downstream aggregation must skip None.)
 - AUTO PER-CONDITION QUALITY GATE (long multi-condition runs): after EACH condition's result is
   recorded, automatically run a quality check and log a one-line verdict (PASS/WARN/FAIL) +
   persist it to a flags file. Tier it: SOFT signals (validity==0/1.0, adherence NaN/out-of-range,
