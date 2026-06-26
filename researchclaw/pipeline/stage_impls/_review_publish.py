@@ -110,16 +110,27 @@ def _collect_experiment_evidence(run_dir: Path) -> str:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    # 4. Count actual number of experiment runs
+    # 4. Count actual number of experiment runs.  Prefer an explicit total_runs
+    # declared in a run payload (aggregated-summary runs where one JSON file
+    # represents many logical runs); fall back to counting run-*.json files.
     actual_run_count = 0
+    declared_total_runs: int | None = None
     for stage_subdir in sorted(run_dir.glob("stage-*/runs")):
         for rf in stage_subdir.glob("*.json"):
-            if rf.name != "results.json":
-                actual_run_count += 1
-    if actual_run_count > 0:
+            if rf.name == "results.json":
+                continue
+            actual_run_count += 1
+            if declared_total_runs is None:
+                _p = _safe_json_loads(rf.read_text(encoding="utf-8"), {})
+                if isinstance(_p, dict):
+                    _tr = _p.get("total_runs") or _p.get("n_runs")
+                    if isinstance(_tr, int) and _tr > 0:
+                        declared_total_runs = _tr
+    _trial_count = declared_total_runs if declared_total_runs is not None else actual_run_count
+    if _trial_count > 0:
         evidence_parts.append(
             f"### Actual Trial Count\n"
-            f"**The experiment was executed {actual_run_count} time(s).** "
+            f"**The experiment was executed {_trial_count} time(s).** "
             f"If the paper claims a different number of trials, this is a CRITICAL discrepancy."
         )
 
