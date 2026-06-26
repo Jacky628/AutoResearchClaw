@@ -330,6 +330,67 @@ def _collect_raw_experiment_metrics(run_dir: Path) -> tuple[str, bool]:
     ), has_parsed_metrics
 
 
+def _dedupe_top_level_sections(draft: str) -> str:
+    """Remove duplicated top-level ``## `` sections from a multi-call draft.
+
+    The paper body is written in three sequential LLM calls whose markdown
+    outputs are concatenated.  If a call over-generates — e.g. Call 1 emits the
+    whole paper instead of only Title/Abstract/Introduction/Related Work — the
+    naive join yields duplicated Method/Experiments/Results/... sections.  This
+    keeps the LAST occurrence of each top-level (``## ``) section (the later
+    call's authoritative, detailed version) and preserves IMRAD order.  It is a
+    no-op when there are no duplicates.  ``### `` subsections stay within their
+    parent ``## `` block (only ``## `` lines split).
+    """
+    import re as _re_dd
+
+    parts = _re_dd.split(r"(?m)^(?=## )", draft)
+    lead = ""
+    blocks: list[tuple[str, str]] = []
+    for p in parts:
+        if not p.strip():
+            continue
+        m = _re_dd.match(r"^##\s+(.+)", p)
+        if not m:
+            lead += p
+            continue
+        blocks.append((m.group(1).strip().lower(), p.rstrip()))
+    if not blocks:
+        return draft
+    last_idx: dict[str, int] = {}
+    for i, (k, _) in enumerate(blocks):
+        last_idx[k] = i
+    kept = [blocks[i] for i in sorted(last_idx.values())]
+    body = "\n\n".join(b for _, b in kept).strip()
+    head = (lead.strip() + "\n\n") if lead.strip() else ""
+    return head + body + "\n"
+
+
+def _strip_named_blocks(instr: str, header_prefixes: tuple[str, ...]) -> str:
+    """Remove ``## <prefix>...`` blocks (heading line through just before the next
+    top-level ``## `` heading, or end of string) from an instruction string.
+
+    Used to keep results-only blocks (paired statistical comparisons, pre-built
+    results tables) out of the Method+Experiments writing call so the model does
+    NOT render them as tables outside the Results section.  No-op when no block
+    matches.  The Results call still receives the full instruction.
+    """
+    import re as _re_sb
+
+    positions = [m.start() for m in _re_sb.finditer(r"(?m)^## ", instr)]
+    if not positions:
+        return instr
+    bounds = positions + [len(instr)]
+    out = instr[: positions[0]]  # preamble before the first ``## ``
+    for i in range(len(positions)):
+        block = instr[bounds[i]:bounds[i + 1]]
+        title = block[3:].lstrip()
+        if any(title.startswith(p) for p in header_prefixes):
+            continue
+        out += block
+    return out.rstrip()
+
+
 def _write_paper_sections(
     *,
     llm: LLMClient,
@@ -460,7 +521,11 @@ def _write_paper_sections(
             "Output markdown with ## headers. Do NOT include a References section.\n"
             "IMPORTANT: Start DIRECTLY with '## Title'. Do NOT include any preamble, "
             "data verification, condition listing, or metric enumeration before the title. "
-            "The paper should read like a published manuscript, not a data report."
+            "The paper should read like a published manuscript, not a data report.\n"
+            "HARD STOP: Output ONLY these four sections — Title, Abstract, Introduction, "
+            "Related Work. Do NOT write Method, Experiments, Results, Discussion, "
+            "Limitations, or Conclusion; those are generated in separate later steps. "
+            "End your output immediately after the Related Work section."
         )
     # R14-1: Higher token limit for reasoning models
     _paper_max_tokens = 12000
@@ -483,6 +548,15 @@ def _write_paper_sections(
     sections.append(part1)
     logger.info("Stage 17: Part 1 (Title+Abstract+Intro+Related Work) — %d chars", len(part1))
 
+    # Root-cause guard (table duplication): the Method+Experiments call describes
+    # experimental SETUP, so strip results-only blocks from its metrics context.
+    # Those tables belong exclusively to the Results call (Call 3), which still
+    # receives the full instruction.  Prevents the same statistical/results table
+    # appearing in both Experiments and Results.
+    exp_metrics_setup = _strip_named_blocks(
+        exp_metrics_instruction,
+        ("PAIRED STATISTICAL COMPARISONS", "PRE-BUILT RESULTS TABLES"),
+    )
     # --- Call 2: Method + Experiments (ML)  OR  Model + Phenomenology (HEP) ---
     if is_hep:
         call2_user = (
@@ -516,7 +590,7 @@ def _write_paper_sections(
         call2_user = (
             f"{preamble}\n\n"
             f"{topic_constraint}"
-            f"{exp_metrics_instruction}\n\n"
+            f"{exp_metrics_setup}\n\n"
             f"{narrative_writing_rules}\n"
             f"{anti_hedging_rules}\n\n"
             # IMP-21: Citation instruction for Method + Experiments
@@ -534,6 +608,11 @@ def _write_paper_sections(
             "6. **Experiments** (800-1200 words): detailed experimental setup, datasets with statistics "
             "(size, splits, features), all baselines and their implementations, hyperparameter settings "
             "in a markdown table, evaluation metrics with mathematical definitions, hardware and runtime info.\n"
+            "SETUP ONLY: The Experiments section describes the experimental SETUP. "
+            "The ONLY table permitted here is the hyperparameter table. Do NOT include any "
+            "results table, per-seed table, or statistical-comparison / paired-test table, and "
+            "do NOT report p-values, win/loss/tie counts, or per-condition outcome metrics — "
+            "ALL results and statistical tables belong EXCLUSIVELY in the Results section.\n"
             "METHOD NAMES IN TABLES: Use SHORT abbreviations (4-8 chars) for method names "
             "in tables. Define abbreviation mappings in a footnote. "
             "NEVER put method names longer than 20 characters in table cells.\n\n"
@@ -647,8 +726,12 @@ def _write_paper_sections(
     sections.append(part3)
     logger.info("Stage 17: Part 3 (Results+Discussion+Limitations+Conclusion) — %d chars", len(part3))
 
-    # Combine all sections
+    # Combine all sections, then remove any duplicated top-level (## ) sections.
+    # Robustness against an earlier call over-generating (e.g. Call 1 emitting the
+    # whole paper despite being asked for Title+Abstract+Intro+Related Work only):
+    # the later, authoritative detailed version of each section wins (keep-last).
     draft = "\n\n".join(sections)
+    draft = _dedupe_top_level_sections(draft)
 
     # R32: Strip data verification preamble that LLMs sometimes emit before
     # the actual paper.  The preamble typically starts with "## Tested Conditions"
