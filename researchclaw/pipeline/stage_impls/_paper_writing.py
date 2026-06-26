@@ -156,6 +156,7 @@ def _collect_raw_experiment_metrics(run_dir: Path) -> tuple[str, bool]:
     """
     metric_lines: list[str] = []
     run_count = 0
+    declared_total_runs: int | None = None
     has_parsed_metrics = False
 
     for stage_subdir in sorted(run_dir.glob("stage-*/runs")):
@@ -174,6 +175,10 @@ def _collect_raw_experiment_metrics(run_dir: Path) -> tuple[str, bool]:
                 continue
 
             run_count += 1
+            if declared_total_runs is None:
+                _tr = payload.get("total_runs") or payload.get("n_runs")
+                if isinstance(_tr, int) and _tr > 0:
+                    declared_total_runs = _tr
 
             # Extract from parsed metrics (check both 'metrics' and 'key_metrics')
             metrics = payload.get("metrics", {}) or payload.get("key_metrics", {})
@@ -317,14 +322,15 @@ def _collect_raw_experiment_metrics(run_dir: Path) -> tuple[str, bool]:
     if _ungrouped:
         formatted_lines.extend(_ungrouped)
 
+    _eff_runs = declared_total_runs if declared_total_runs is not None else run_count
     return (
-        f"\n\nACTUAL EXPERIMENT DATA (from {run_count} run(s) — use ONLY these numbers):\n"
+        f"\n\nACTUAL EXPERIMENT DATA (from {_eff_runs} run(s) — use ONLY these numbers):\n"
         "```\n"
         + "\n".join(formatted_lines[:200])
         + "\n```\n"
         "CRITICAL: Every number in the Results table MUST come from the data above. "
         "Do NOT round excessively, do NOT invent numbers, do NOT change values. "
-        f"The experiment ran {run_count} time(s) — state this accurately in the methodology.\n"
+        f"The experiment ran {_eff_runs} time(s) — state this accurately in the methodology.\n"
         "NEVER paste raw metric paths (like 'condition/env/step/metric: value') "
         "into the paper. Always convert to formatted LaTeX tables or inline prose.\n"
     ), has_parsed_metrics
