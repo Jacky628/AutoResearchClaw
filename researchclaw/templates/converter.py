@@ -1521,6 +1521,16 @@ def _convert_inline(text: str) -> str:
     # as \_, not become \\_ which pdflatex interprets as linebreak + subscript.
     text = re.sub(r"\\([#%&_{}])", _protect, text)
 
+    # BUG: Protect markdown-escaped asterisks (\*) as a LITERAL '*' so the
+    # bold/italic regexes below do not mistake them for emphasis delimiters.
+    # e.g. a stats-table footnote "*\\* p<0.05 ...*" must become
+    # \textit{* p<0.05 ...}, NOT \textit{\} ...} (unclosed -> fatal compile).
+    def _protect_star(m: re.Match[str]) -> str:
+        idx = len(protected)
+        protected.append("*")
+        return f"\x00PROT{idx}\x00"
+    text = re.sub(r"\\\*", _protect_star, text)
+
     # Protect \(...\) patterns with linebreaks already handled
     # (should be caught above, but safety net)
 
