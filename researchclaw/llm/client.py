@@ -33,6 +33,7 @@ _NEW_PARAM_MODELS = frozenset(
         "gpt-5.2",
         "gpt-5.3",
         "gpt-5.4",
+        "gpt-5.5",
     }
 )
 
@@ -64,6 +65,18 @@ def _is_reasoning_model(model: str) -> bool:
     (and which use the standard max_tokens param, not max_completion_tokens)."""
     m = (model or "").lower()
     return any(marker in m for marker in _REASONING_MODEL_MARKERS)
+
+
+def _strip_provider(model: str) -> str:
+    """Strip an OpenRouter-style provider prefix: 'openai/gpt-5.4' -> 'gpt-5.4'."""
+    return model.split("/", 1)[1] if model and "/" in model else (model or "")
+
+
+def _supports_reasoning_effort(model: str) -> bool:
+    """True for OpenAI reasoning models (o-series, gpt-5.x) that accept a
+    ``reasoning.effort`` param via OpenAI/OpenRouter (provider-prefix tolerant)."""
+    m = _strip_provider(model).lower()
+    return m.startswith(("o1", "o3", "o4", "gpt-5"))
 
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -109,6 +122,10 @@ class LLMConfig:
     # MetaClaw bridge: fallback URL if primary (proxy) is unreachable
     fallback_url: str = ""
     fallback_api_key: str = ""
+    # Reasoning effort for OpenAI reasoning models (o-series, gpt-5.x) via
+    # OpenAI/OpenRouter: xhigh|high|medium|low|minimal|none. Empty => provider
+    # default. Non-reasoning models ignore it.
+    reasoning_effort: str = ""
 
 
 class LLMClient:
@@ -184,6 +201,7 @@ class LLMClient:
             fallback_url=fallback_url,
             fallback_api_key=fallback_api_key,
             timeout_sec=getattr(rc_config.llm, "timeout_sec", 600),
+            reasoning_effort=getattr(rc_config.llm, "reasoning_effort", "") or "",
         )
         client = cls(config)
 
@@ -246,6 +264,7 @@ class LLMClient:
             primary_model=reviewer_model,
             fallback_models=[],
             timeout_sec=getattr(llm, "timeout_sec", 600),
+            reasoning_effort=getattr(llm, "reasoning_effort", "") or "",
         )
         client = cls(config)
 
@@ -500,7 +519,7 @@ class LLMClient:
                     body["temperature"] = _temp
 
                 # Use correct token parameter based on model
-                if any(model.startswith(prefix) for prefix in _NEW_PARAM_MODELS):
+                if any(_strip_provider(model).startswith(prefix) for prefix in _NEW_PARAM_MODELS):
                     reasoning_min = 32768
                     body["max_completion_tokens"] = max(max_tokens, reasoning_min)
                 elif _is_reasoning_model(model):
@@ -509,6 +528,13 @@ class LLMClient:
                     body["max_tokens"] = max(max_tokens, _REASONING_MIN_TOKENS)
                 else:
                     body["max_tokens"] = max_tokens
+
+                # Pass reasoning effort to OpenAI reasoning models (o-series,
+                # gpt-5.x) when configured. Gated so non-reasoning models that
+                # reject a `reasoning` field do not 400.
+                _eff = (self.config.reasoning_effort or "").strip()
+                if _eff and _supports_reasoning_effort(model):
+                    body["reasoning"] = {"effort": _eff}
 
             if json_mode:
                 # Many OpenAI-compatible providers don't support the

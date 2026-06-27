@@ -215,6 +215,9 @@ class LlmConfig:
     reviewer_base_url: str = ""
     reviewer_api_key: str = ""
     reviewer_api_key_env: str = ""
+    # Reasoning effort for OpenAI reasoning models (o-series, gpt-5.x):
+    # xhigh|high|medium|low|minimal|none. Empty => provider default.
+    reasoning_effort: str = ""
     # Multi-model debate engine (Stage 8/14/18). Opt-in; the debate panel reuses
     # existing models (primary_model + reviewer_model + fallback_models, deduped),
     # each role bound to a different model. Judge reuses reviewer_model.
@@ -1193,6 +1196,7 @@ def _parse_llm_config(data: dict[str, Any]) -> LlmConfig:
         notes=data.get("notes", ""),
         timeout_sec=_safe_int(data.get("timeout_sec"), 600),
         reviewer_model=data.get("reviewer_model", ""),
+        reasoning_effort=str(data.get("reasoning_effort", "") or ""),
         reviewer_provider=data.get("reviewer_provider", ""),
         reviewer_base_url=data.get("reviewer_base_url", ""),
         reviewer_api_key=data.get("reviewer_api_key", ""),
