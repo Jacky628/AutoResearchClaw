@@ -56,6 +56,11 @@ llm:
   reviewer_base_url: ""       # defaults to base_url above
   reviewer_api_key_env: ""    # e.g. "ANTHROPIC_API_KEY" — defaults to api_key_env
   reviewer_api_key: ""        # inline key (optional; prefer the env var)
+  # Reasoning effort for OpenAI reasoning models (o-series / gpt-5.x) via
+  # OpenAI/OpenRouter — e.g. a gpt-5.x reviewer_model/judge. One of:
+  # xhigh | high | medium | low | minimal | none. Empty => provider default.
+  # Non-reasoning models (gpt-4o, Claude, Gemini) ignore it.
+  reasoning_effort: ""        # e.g. "high" for a gpt-5.x reviewer/judge
   # --- Multi-model debate engine (Stage 8 / 14 / 18), opt-in ---
   # Reuses primary_model + reviewer_model + fallback_models (deduped) as a debate
   # panel: distinct models argue per role (round-robin), `debate_rounds` rebuttal
