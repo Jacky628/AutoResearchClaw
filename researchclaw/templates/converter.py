@@ -1489,6 +1489,33 @@ def _convert_inline(text: str) -> str:
     text = text.replace("\u2260", "$\\neq$")       # ≠
     text = text.replace("\u2208", "$\\in$")         # ∈
     text = text.replace("\u221e", "$\\infty$")      # ∞
+    text = text.replace("\u2205", "$\\emptyset$")  # ∅ empty set
+    text = text.replace("\u2200", "$\\forall$")    # ∀
+    text = text.replace("\u2203", "$\\exists$")    # ∃
+    text = text.replace("\u2227", "$\\wedge$")     # ∧
+    text = text.replace("\u2228", "$\\vee$")       # ∨
+    text = text.replace("\u00ac", "$\\neg$")       # ¬
+    text = text.replace("\u2286", "$\\subseteq$")  # ⊆
+    text = text.replace("\u2282", "$\\subset$")    # ⊂
+    text = text.replace("\u222a", "$\\cup$")       # ∪
+    text = text.replace("\u2229", "$\\cap$")       # ∩
+    text = text.replace("\u22a5", "$\\perp$")      # ⊥
+    text = text.replace("\u2218", "$\\circ$")      # ∘
+    text = text.replace("\u22c5", "$\\cdot$")      # ⋅
+    text = text.replace("\u2211", "$\\sum$")       # ∑
+    text = text.replace("\u220f", "$\\prod$")      # ∏
+    text = text.replace("\u2202", "$\\partial$")   # ∂
+    text = text.replace("\u2207", "$\\nabla$")     # ∇
+    text = text.replace("\u2261", "$\\equiv$")     # ≡
+    text = text.replace("\u2212", "$-$")             # − minus
+    # Subscript digits ₀-₉ -> $_0$..$_9$
+    for _sd in range(10):
+        text = text.replace(chr(0x2080 + _sd), f"$_{_sd}$")
+    # Superscript digits (irregular codepoints) -> $^0$..$^9$
+    for _sc, _sd in (("\u2070","0"),("\u00b9","1"),("\u00b2","2"),("\u00b3","3"),
+                     ("\u2074","4"),("\u2075","5"),("\u2076","6"),("\u2077","7"),
+                     ("\u2078","8"),("\u2079","9")):
+        text = text.replace(_sc, f"$^{_sd}$")
 
     # BUG-110: Replace Unicode Greek letters with LaTeX math equivalents.
     # These appear when LLMs emit raw Unicode (e.g. "ε-greedy" instead of
@@ -1496,6 +1523,13 @@ def _convert_inline(text: str) -> str:
     for _uchar, _lcmd in _UNICODE_GREEK_TO_LATEX.items():
         if _uchar in text:
             text = text.replace(_uchar, _lcmd)
+
+    # Safety net: strip any remaining Unicode symbols in blocks pdflatex's
+    # inputenc cannot typeset (math operators, arrows, sub/superscripts,
+    # letterlike, technical, shapes). Common ones are mapped above; this keeps
+    # an unmapped symbol from causing a fatal "Unicode character not set up".
+    text = re.sub(r"[\u2070-\u209f\u2100-\u214f\u2190-\u21ff\u2200-\u22ff"
+                  r"\u2300-\u23ff\u25a0-\u25ff\u2600-\u27bf]", "", text)
 
     # Protect math and cite from escaping
     protected: list[str] = []
