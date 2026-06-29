@@ -2694,6 +2694,44 @@ def _execute_export_publish(
                 "Stage 22: Packaged single-file code release with %d deps",
                 len(requirements),
             )
+
+    # Fallback: if no experiment_final/{.py} artifact was produced, the code/
+    # output contract would FAIL Stage 22 (-> Stage 23 skipped).  Recover the
+    # generated experiment source from the most recent stage that has it so the
+    # deliverable always carries runnable code.
+    if "code/" not in artifacts:
+        _fallback_py: list[Path] = []
+        for _patt in (
+            "stage-*/experiment_final/*.py",
+            "stage-*/experiment/*.py",
+            "stage-*/runs/_project_*/*.py",
+        ):
+            _cands = sorted(run_dir.glob(_patt), reverse=True)
+            if _cands:
+                _fallback_py = sorted(_cands[0].parent.glob("*.py"))
+                break
+        if _fallback_py:
+            code_dir = stage_dir / "code"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            for src in _fallback_py:
+                (code_dir / src.name).write_bytes(src.read_bytes())
+            try:
+                _src_rel = _fallback_py[0].parent.relative_to(run_dir)
+            except ValueError:
+                _src_rel = _fallback_py[0].parent
+            (code_dir / "README.md").write_text(
+                f"# Code Package\n\nExperiment source recovered from `{_src_rel}`.\n\n"
+                "## How to Run\n`python main.py`\n",
+                encoding="utf-8",
+            )
+            artifacts.append("code/")
+            logger.info(
+                "Stage 22: Packaged %d code file(s) via fallback from %s",
+                len(_fallback_py), _src_rel,
+            )
+        else:
+            logger.warning("Stage 22: No experiment code found to package into code/")
+
     # WS-5.5: Generate framework diagram prompt for methodology section
     try:
         _framework_prompt = _generate_framework_diagram_prompt(
