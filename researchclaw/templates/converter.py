@@ -228,6 +228,18 @@ def _sanitize_latex_output(
         tex,
     )
 
+    # 4c. Remove orphan caption paragraphs.  The draft sometimes emits BOTH a
+    #     float (often a passed-through LaTeX table/figure that carries its own
+    #     \caption) AND a separate "**Table N.** ..."/"**Figure N.** ..." body
+    #     paragraph.  The standalone paragraph is a duplicate caption that would
+    #     otherwise render twice, so drop it.  (Markdown tables whose caption is
+    #     on the immediately-preceding line already had it folded into the float.)
+    tex = re.sub(
+        r"(?m)^\\textbf\{(?:Table|Figure)\s+\d+[.:][^}]*\}.*(?:\n)?",
+        "",
+        tex,
+    )
+
     # 4b. Auto-map orphan \ref{fig:X} to closest \label{fig:Y} by prefix.
     #     The converter generates long labels from captions (fig:overall_cifar_100)
     #     but the LLM references short names (fig:overall).
@@ -1019,21 +1031,30 @@ def _convert_block(text: str) -> str:
             and i + 1 < len(lines)
             and _TABLE_SEP_RE.match(lines[i + 1].strip())
         ):
-            # Check if previous line is a table caption (e.g. **Table 1: ...**)
+            # Check if a preceding line is a table caption (e.g. **Table 1: ...**).
+            # Scan back past blank lines so a caption separated from the table by
+            # an empty line is still folded in (not left as a duplicate paragraph).
             table_caption = ""
-            if output:
-                prev = output[-1].strip()
+            _cap_j = len(output) - 1
+            while _cap_j >= 0 and output[_cap_j].strip() == "":
+                _cap_j -= 1
+            if _cap_j >= 0:
+                prev = output[_cap_j].strip()
                 # Match bold caption: \textbf{Table N...} (already converted)
                 # or raw markdown: **Table N: ...**
                 cap_m = re.match(
-                    r"(?:\\textbf\{|[*]{2})\s*Table\s+\d+[.:]?\s*(.*?)(?:\}|[*]{2})$",
+                    r"(?:\\textbf\{|[*]{2})\s*Table\s+\d+\s*[.:]?\s*(.*)$",
                     prev,
                 )
                 if cap_m:
-                    table_caption = f"Table {cap_m.group(1)}" if cap_m.group(1) else ""
-                    if not table_caption:
-                        table_caption = prev
-                    output.pop()  # Remove caption line from output (now inside table)
+                    # Keep the FULL description whether it sits inside the bold
+                    # span ("**Table N: desc**") or after it ("**Table N.** desc"),
+                    # instead of dropping it and falling back to an auto-caption.
+                    desc = cap_m.group(1).strip()
+                    desc = re.sub(r"^\}\s*", "", desc)               # "} desc" -> "desc"
+                    desc = re.sub(r"\s*(?:\}|[*]{2})\s*$", "", desc)  # trailing } or **
+                    table_caption = desc
+                    del output[_cap_j:]  # remove caption (+ trailing blanks); folded into float
             table_lines, i = _collect_table(lines, i)
             output.append(_render_table(table_lines, caption=table_caption))
             continue
@@ -1433,6 +1454,10 @@ def _render_figure(caption: str, path: str) -> str:
     fig_num = _next_figure_num()
     # Sanitize path for LaTeX: replace spaces, keep underscores
     path = path.replace(" ", "_")
+    # Strip any "Figure N:"/"Figure N." prefix baked into the caption text, else
+    # LaTeX's automatic "Figure N:" doubles it (e.g. "Figure 1: Figure 3: ...").
+    if caption:
+        caption = re.sub(r"^\s*Figure\s+\d+\s*[.:]\s*", "", caption)
     cap_tex = _convert_inline(caption) if caption else f"Figure {fig_num}"
     label_key = re.sub(r"[^a-z0-9]+", "_", caption.lower()).strip("_")[:30]
     if not label_key:
