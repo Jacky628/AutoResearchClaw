@@ -1947,6 +1947,30 @@ def _execute_paper_draft(
         except Exception as _tb_exc:
             logger.warning("Stage 17: Failed to build pre-built tables: %s", _tb_exc)
 
+    # Inject externally-computed ablation/control result tables. Experiments run ALONGSIDE the
+    # main condition loop (content/prefix/dropout ablations, independent metric audits) have no
+    # VerifiedRegistry entry, so build_results_tables() cannot emit them and the condition
+    # whitelist would otherwise suppress them. If the analysis stage produced ablation_tables.tex,
+    # include it verbatim so these controls are reported as real tables, not just prose.
+    try:
+        _abl_paths = sorted(run_dir.glob("stage-14*/ablation_tables.tex"), reverse=True)
+        if _abl_paths:
+            _abl_text = _abl_paths[0].read_text(encoding="utf-8").strip()
+            if _abl_text:
+                exp_metrics_instruction += (
+                    "\n\n## PRE-BUILT ABLATION / CONTROL RESULT TABLES (MANDATORY — copy verbatim into Results)\n"
+                    "These are verified results from controlled ablations run alongside the main\n"
+                    "experiments. You MUST include EACH of these tables in the Results section EXACTLY\n"
+                    "as shown — each with its own descriptive caption and one sentence of interpretation.\n"
+                    "Do NOT modify any numbers and do NOT omit any table. The conditions/arms that\n"
+                    "appear in these tables are verified and MUST be reported in Results even if they\n"
+                    "are not listed in the main condition whitelist above.\n\n"
+                    + _abl_text
+                )
+                logger.info("Stage 17: Injected ablation/control tables (%d chars)", len(_abl_text))
+    except Exception as _abl_exc:
+        logger.warning("Stage 17: Failed to inject ablation tables: %s", _abl_exc)
+
     # R4-2: Anti-fabrication data integrity instruction
     exp_metrics_instruction += (
         "\n\n## CRITICAL: Data Integrity Rules\n"

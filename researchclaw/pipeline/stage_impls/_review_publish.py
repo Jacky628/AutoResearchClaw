@@ -390,6 +390,49 @@ def _execute_paper_revision(
         # prompt bank; no adapter overlay.
         _revision_system = sp.system
         _revision_user = sp.user
+        # Content-preservation guard (GENERAL — independent of topic/paper): a revision must
+        # not silently DROP a section/experiment that the draft contains while keeping the
+        # overall word count up (the failure mode the whole-paper word-count guard misses).
+        # We fingerprint the draft STRUCTURALLY — section headings + distinctive numeric
+        # results — and require both to survive; this catches a dropped experiment in ANY paper,
+        # not one hard-coded set of ablations.
+        def _headings(t):
+            return re.findall(r"(?m)^#{1,4}\s+(.+?)\s*$", t)
+
+        def _htoks(h):
+            # drop pure-digit tokens so section RENUMBERING ("3.1 Problem Formulation" ->
+            # "Problem Formulation") is not mistaken for a dropped section
+            return {t for t in re.sub(r"[^a-z0-9 ]+", " ", h.lower()).split() if not t.isdigit()}
+
+        # guard every draft section heading except the paper title (first heading)
+        _guard_headings = [h.strip() for h in _headings(draft)[1:] if len(h.strip()) > 3]
+        # distinctive numeric fingerprints: decimals (0.359), sci-notation p-values (5e-23)
+        _draft_numbers = set(re.findall(r"\d+\.\d{2,}|\d+e-?\d+", draft.lower()))
+
+        def _content_loss(text):
+            """(dropped_headings, numeric_survival_fraction) vs draft — both topic-agnostic
+            signals that a revision deleted a whole section/experiment."""
+            low = text.lower()
+            rev_head_toks = [_htoks(h) for h in _headings(text)]
+            dropped = []
+            for h in _guard_headings:
+                ht = _htoks(h)
+                # preserved iff SOME revised heading shares >=60% of this heading's tokens
+                # (tolerates minor renames; catches true drops regardless of common words)
+                if ht and not any(r and len(ht & r) / len(ht) >= 0.6 for r in rev_head_toks):
+                    dropped.append(h)
+            num_survival = (sum(1 for n in _draft_numbers if n in low) / len(_draft_numbers)
+                            if _draft_numbers else 1.0)
+            return dropped, num_survival
+
+        _revision_user = (
+            "CONTENT PRESERVATION (MANDATORY): the revision MUST retain EVERY section, "
+            "experiment, ablation, table, figure and numeric result that appears in the draft. "
+            "Do NOT delete, merge away, or rename out any section or results/experiment "
+            "subsection, and do NOT drop any reported number. Revision = address reviewer "
+            "comments and improve clarity while keeping ALL empirical content and ALL section "
+            "headings; copy any section without reviewer comments through UNCHANGED.\n\n"
+        ) + _revision_user
         # R10-Fix2: Ensure max_tokens is sufficient for full paper revision
         revision_max_tokens = sp.max_tokens
         if revision_max_tokens and draft_word_count > 0:
@@ -414,21 +457,25 @@ def _execute_paper_revision(
         )
         revised = resp.content
         revised_word_count = len(revised.split())
-        # Length guard: if revision is shorter than 80% of draft, retry once
-        if draft_word_count > 500 and revised_word_count < int(draft_word_count * 0.8):
+        _dropped, _num_keep = _content_loss(revised)
+        _too_short = draft_word_count > 500 and revised_word_count < int(draft_word_count * 0.8)
+        _lost_numbers = bool(_draft_numbers) and _num_keep < 0.8
+        # Retry if the revision lost length, dropped sections, or lost reported numbers — the
+        # general signature of a revision that silently deleted a whole experiment/section.
+        if _too_short or _dropped or _lost_numbers:
             logger.warning(
-                "Paper revision (%d words) is shorter than draft (%d words). "
-                "Retrying with stronger length enforcement.",
-                revised_word_count,
-                draft_word_count,
+                "Paper revision needs retry: %d/%d words; dropped=%s; numeric_survival=%.2f",
+                revised_word_count, draft_word_count, _dropped, _num_keep,
             )
             retry_user = (
-                f"CRITICAL LENGTH REQUIREMENT: The draft is {draft_word_count} words. "
-                f"Your revision MUST be at least {draft_word_count} words — ideally longer. "
-                f"Do NOT summarize or condense ANY section. Copy each section verbatim "
-                f"and ONLY make targeted improvements to address reviewer comments. "
-                f"If a section has no reviewer comments, include it UNCHANGED.\n\n"
-                + _revision_user
+                f"CRITICAL REQUIREMENTS: The draft is {draft_word_count} words. Your revision "
+                f"MUST be at least {draft_word_count} words AND MUST contain EVERY section, "
+                f"experiment, and reported number from the draft. Copy each section verbatim and "
+                f"ONLY make targeted edits to address reviewer comments; include any section "
+                f"without reviewer comments UNCHANGED.\n"
+                + (f"You DROPPED these draft sections — RESTORE them verbatim: {_dropped}\n" if _dropped else "")
+                + (f"You DROPPED reported results (only {_num_keep:.0%} of draft numbers survived) — restore all experiments and their numbers.\n" if _lost_numbers else "")
+                + "\n" + _revision_user
             )
             resp2 = _chat_with_prompt(
                 llm, _revision_system, retry_user,
@@ -436,33 +483,27 @@ def _execute_paper_revision(
             )
             revised2 = resp2.content
             revised2_word_count = len(revised2.split())
-            if revised2_word_count >= int(draft_word_count * 0.8):
+            _dropped2, _num_keep2 = _content_loss(revised2)
+            _ok2 = (not _dropped2
+                    and revised2_word_count >= int(draft_word_count * 0.8)
+                    and (not _draft_numbers or _num_keep2 >= 0.8))
+            if _ok2:
                 revised = revised2
-            elif revised2_word_count > revised_word_count:
-                # Retry improved but still not enough — use the longer version
-                revised = revised2
-                logger.warning(
-                    "Retry improved (%d → %d words) but still shorter than draft (%d).",
-                    revised_word_count,
-                    revised2_word_count,
-                    draft_word_count,
-                )
             else:
-                # Both attempts produced short output — preserve full original draft
+                # Revision still lost content → preserve the COMPLETE draft, which contains
+                # every section/experiment and all reported numbers. A complete draft beats a
+                # revision that silently deleted a result.
                 logger.warning(
-                    "Retry also produced short output (%d words). "
-                    "Falling back to FULL ORIGINAL DRAFT to prevent content loss.",
-                    revised2_word_count,
+                    "Revision retry still lost content (dropped=%s, words=%d, numeric_survival=%.2f) "
+                    "— falling back to FULL DRAFT to preserve all experiments.",
+                    _dropped2, revised2_word_count, _num_keep2,
                 )
-                # Extract useful revision points as appendix
-                revision_words = revised.split()
+                revision_words = revised2.split()
                 revision_summary = (
                     " ".join(revision_words[:500]) + "\n\n*(Revision summary truncated)*"
-                    if len(revision_words) > 500
-                    else revised
+                    if len(revision_words) > 500 else revised2
                 )
                 if revision_summary.strip():
-                    # Save revision notes to internal file, not paper body
                     (stage_dir / "revision_notes_internal.md").write_text(
                         revision_summary, encoding="utf-8"
                     )
@@ -552,9 +593,14 @@ def _execute_quality_gate(
 
     if llm is not None:
         _pm = prompts or PromptManager()
-        # IMP-33: Evaluate the full paper instead of truncating to 12K chars.
-        # Split into chunks if very long, but prefer sending the full text.
-        paper_for_eval = revised[:40000] if len(revised) > 40000 else revised
+        # IMP-33 / BUG-fix: Evaluate the FULL paper. A 40K-char cap silently dropped the
+        # Limitations+Conclusion of papers >40K chars (e.g. a 45.7K-char draft), so the judge
+        # reported "Discussion truncated / no conclusion" and scored it down. 200K chars
+        # (~50K tokens) fits the gpt-5.4 reviewer context with large headroom and covers any
+        # realistic workshop paper; the cap is now only a runaway-input safety bound.
+        if len(revised) > 200000:
+            logger.warning("Stage 20: paper %d chars exceeds 200K eval cap — truncating for judge", len(revised))
+        paper_for_eval = revised[:200000] if len(revised) > 200000 else revised
 
         # BUG-25: Inject experiment status into quality gate prompt
         _exp_context = ""
