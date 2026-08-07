@@ -40,6 +40,10 @@ from researchclaw.templates.converter import (
     _resolve_markdown_footnotes,
     _FN_OPEN,
     _FN_CLOSE,
+    _visual_len,
+    _cell_breakable,
+    _longest_unbreakable,
+    TABLE_FONT,
     check_paper_completeness,  # noqa: F401
 )
 
@@ -887,3 +891,101 @@ class TestMarkdownFootnotes:
     def test_document_without_footnotes_is_unchanged(self) -> None:
         markdown = "## M\n\nJust [cite2020key] and *text*.\n"
         assert _resolve_markdown_footnotes(markdown) == markdown
+
+
+class TestHeadingNumberStripping:
+    """LaTeX numbers headings itself, so a number left in the title text prints twice."""
+
+    @pytest.mark.parametrize(
+        "heading,expected",
+        [
+            ("1. Introduction", "Introduction"),
+            ("2.1 Related Work", "Related Work"),
+            ("3.2.1 Details", "Details"),
+            # appendix subsections carry a letter-prefixed number; leaving it in the
+            # title produced "A.8  A.8 What the released hash manifest covers"
+            ("A.8 What the released hash manifest covers", "What the released hash manifest covers"),
+            ("B.10.2 Deep nesting", "Deep nesting"),
+        ],
+    )
+    def test_manual_number_is_stripped(self, heading: str, expected: str) -> None:
+        tex = markdown_to_latex(f"## {heading}\n\nBody.\n", NEURIPS_2025, title="T")
+        assert f"\\section{{{expected}}}" in tex
+
+    @pytest.mark.parametrize(
+        "heading",
+        ["A Study of Conditioning", "B. Results", "Introduction", "4-tag recall"],
+    )
+    def test_non_numbers_are_left_alone(self, heading: str) -> None:
+        """A bare letter or a leading digit that is part of the words must survive."""
+        tex = markdown_to_latex(f"## {heading}\n\nBody.\n", NEURIPS_2025, title="T")
+        assert f"\\section{{{heading}}}" in tex
+
+
+class TestTableTypography:
+    """Every table in a document must be set at the same size.
+
+    The previous behaviour wrapped wide tables in ``\\resizebox{\\columnwidth}{!}``,
+    which scales a table to *exactly* the text width. The scale factor is then
+    columnwidth/natural-width and differs per table: across one paper's fifteen
+    tables the effective body size ran from 5.8pt to 10.8pt, narrow tables
+    magnified above the surrounding prose and wide ones shrunk below legibility.
+    """
+
+    NARROW = "## R\n\n| A | B |\n|---|---:|\n| x | 1 |\n"
+    WIDE_TEXT = (
+        "## R\n\n| Method | Description of the approach, at some length | Acc |\n"
+        "|---|---|---:|\n| M | a long explanatory sentence that would stretch it | 0.9 |\n"
+    )
+    MANY_NUMERIC = (
+        "## R\n\n| Profile | a | b | c | d | e | f | g |\n"
+        "|---|---:|---:|---:|---:|---:|---:|---:|\n"
+        "| CIRCLE | 0.111 | 0.222 | 0.333 | 0.444 | 0.555 | 0.666 | 0.777 |\n"
+    )
+
+    @pytest.mark.parametrize("name", ["NARROW", "WIDE_TEXT", "MANY_NUMERIC"])
+    def test_every_table_carries_the_same_size(self, name: str) -> None:
+        tex = markdown_to_latex(getattr(self, name), NEURIPS_2025, title="T")
+        assert TABLE_FONT in tex
+
+    @pytest.mark.parametrize("name", ["NARROW", "WIDE_TEXT", "MANY_NUMERIC"])
+    def test_scale_to_fill_is_never_used(self, name: str) -> None:
+        """\\resizebox{\\columnwidth}{!} magnifies a narrow table; max width does not."""
+        tex = markdown_to_latex(getattr(self, name), NEURIPS_2025, title="T")
+        assert r"\resizebox{\columnwidth}{!}" not in tex
+
+    def test_long_text_column_wraps_instead_of_stretching(self) -> None:
+        tex = markdown_to_latex(self.WIDE_TEXT, NEURIPS_2025, title="T")
+        assert r"\begin{tabularx}{\columnwidth}" in tex
+        assert "X" in re.search(r"\\begin\{tabularx\}\{\\columnwidth\}\{([^}]*)\}", tex).group(1)
+
+    def test_narrow_table_is_left_alone(self) -> None:
+        tex = markdown_to_latex(self.NARROW, NEURIPS_2025, title="T")
+        block = re.search(r"\\begin\{table\}.*?\\end\{table\}", tex, re.S).group(0)
+        assert r"\begin{tabular}{lr}" in block
+        # checked on the float, not the document: the preamble loads tabularx
+        assert "adjustbox" not in block
+        assert "tabularx" not in block
+
+    def test_uncompressible_table_is_shrunk_not_magnified(self) -> None:
+        """Numbers cannot wrap, so a table of them is scaled down — but only down."""
+        tex = markdown_to_latex(self.MANY_NUMERIC, NEURIPS_2025, title="T")
+        assert r"\adjustbox{max width=\columnwidth}" in tex
+
+    def test_visual_len_counts_glyphs_not_markup(self) -> None:
+        """Sizing columns by source length made maths look far too wide to wrap."""
+        assert _visual_len(r"$5.9\times10^{-7}$") < len(r"$5.9\times10^{-7}$")
+        assert _visual_len("CIRCLE+NGON+THIN") == len("CIRCLE+NGON+THIN")
+
+    def test_compound_labels_become_breakable(self) -> None:
+        assert r"\discretionary{}{}{}" in _cell_breakable("CIRCLE+NGON+THIN")
+
+    @pytest.mark.parametrize("cell", ["TALL", r"$5.9\times10^{-7}$", "short words here"])
+    def test_cells_that_need_no_break_are_untouched(self, cell: str) -> None:
+        assert _cell_breakable(cell) == cell
+
+    def test_maths_is_measured_as_one_unbreakable_run(self) -> None:
+        """A cell of maths cannot break, so the column is sized by its longest atom."""
+        cell = r"$5.9\times10^{-7}$ / $8.5\times10^{-15}$"
+        assert _longest_unbreakable([cell]) == _visual_len(r"$8.5\times10^{-15}$")
+        assert _longest_unbreakable([cell]) < _visual_len(cell)
