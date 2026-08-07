@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 
 import pytest
@@ -36,6 +37,9 @@ from researchclaw.templates.converter import (
     _reset_render_counters,
     _next_table_num,
     _next_figure_num,
+    _resolve_markdown_footnotes,
+    _FN_OPEN,
+    _FN_CLOSE,
     check_paper_completeness,  # noqa: F401
 )
 
@@ -745,3 +749,141 @@ class TestAlgorithmEscaping:
         result = _render_code_block("python", code)
         assert r"\begin{verbatim}" in result
         assert "x_1" in result  # NOT escaped in verbatim
+
+
+# =====================================================================
+# Markdown footnotes
+# =====================================================================
+
+
+_FN_SPAN_RE = re.compile(
+    re.escape(_FN_OPEN) + r".*?" + re.escape(_FN_CLOSE), re.DOTALL
+)
+
+
+def _outside_footnotes(text: str) -> str:
+    """The document with every inlined footnote body removed.
+
+    Assertions go through this rather than testing the whole string: under the
+    old DOTALL body capture the swallowed block was still *present*, just
+    buried inside the footnote, so a plain ``in`` check passed on a corrupted
+    document.
+    """
+    return _FN_SPAN_RE.sub("", text)
+
+
+class TestMarkdownFootnotes:
+    """Tests for _resolve_markdown_footnotes() and its LaTeX output.
+
+    The definition-swallowing cases below are the reason this feature is
+    tested at all: with a DOTALL body capture, a definition that is not
+    followed by a blank line absorbs the next block of the paper into the
+    footnote and deletes it from the body, and nothing downstream errors.
+    """
+
+    def test_reference_becomes_footnote(self) -> None:
+        tex = markdown_to_latex(
+            "## Method\n\nA claim.[^a]\n\n[^a]: The note body.\n",
+            NEURIPS_2025,
+            title="T",
+        )
+        assert r"\footnote{The note body.}" in tex
+        assert "[^a]" not in tex
+        assert "XFOOTNOTE" not in tex
+
+    def test_definition_followed_by_heading_keeps_the_heading(self) -> None:
+        out = _resolve_markdown_footnotes(
+            "A claim.[^1]\n\n[^1]: See Appendix A.\n## Results\n\nBody.\n"
+        )
+        assert "## Results" in _outside_footnotes(out)
+        assert "Body." in _outside_footnotes(out)
+        assert f"{_FN_OPEN}See Appendix A.{_FN_CLOSE}" in out
+
+    def test_definition_followed_by_prose_keeps_the_prose(self) -> None:
+        out = _resolve_markdown_footnotes(
+            "A claim.[^1]\n[^1]: See Appendix A.\nThe sentence carrying the claim.\n"
+        )
+        assert "The sentence carrying the claim." in _outside_footnotes(out)
+        assert f"{_FN_OPEN}See Appendix A.{_FN_CLOSE}" in out
+
+    @pytest.mark.parametrize(
+        "trailer,survivor",
+        [
+            ("- item one\n- item two\n", "- item one"),
+            ("| A | B |\n|---|---|\n| 1 | 2 |\n", "| A | B |"),
+            ("```python\nx = 1\n```\n", "x = 1"),
+        ],
+    )
+    def test_definition_followed_by_block_keeps_the_block(
+        self, trailer: str, survivor: str
+    ) -> None:
+        out = _resolve_markdown_footnotes(f"A claim.[^a]\n[^a]: Note.\n{trailer}")
+        assert survivor in _outside_footnotes(out)
+        assert f"{_FN_OPEN}Note.{_FN_CLOSE}" in out
+
+    def test_crlf_input_does_not_swallow_the_document(self) -> None:
+        out = _resolve_markdown_footnotes(
+            "A claim.[^a].\r\n\r\n[^a]: Note.\r\n\r\nThe next paragraph.\r\n"
+        )
+        assert "The next paragraph." in _outside_footnotes(out)
+        assert f"{_FN_OPEN}Note.{_FN_CLOSE}" in out
+
+    def test_indented_continuation_joins_the_body(self) -> None:
+        out = _resolve_markdown_footnotes(
+            "A claim.[^a]\n\n[^a]: First line\n    continued here.\n\nNext.\n"
+        )
+        assert f"{_FN_OPEN}First line continued here.{_FN_CLOSE}" in out
+        assert "Next." in _outside_footnotes(out)
+
+    @pytest.mark.parametrize(
+        "markdown",
+        [
+            "## Method[^a]\n\nBody.\n\n[^a]: Note.\n",
+            "## R\n\n| Model[^a] | Acc |\n|---|---|\n| M | 0.9 |\n\n[^a]: Note.\n",
+            "## R\n\n![A caption[^a]](figures/f)\n\nBody.\n\n[^a]: Note.\n",
+        ],
+    )
+    def test_unsafe_positions_emit_no_footnote(self, markdown: str) -> None:
+        """LaTeX takes no \\footnote in a heading, a table cell or a caption.
+
+        The old behaviour put one there anyway: inside \\caption{} that is a
+        fatal pdflatex error, and inside \\section{} it tears the heading apart
+        and corrupts the \\label slug derived from it.
+        """
+        tex = markdown_to_latex(markdown, NEURIPS_2025, title="T")
+        assert r"\footnote" not in tex
+        assert "XFOOTNOTE" not in tex
+        assert not re.search(r"\\label\{[^}]*footnote", tex, re.IGNORECASE)
+
+    def test_reference_inside_a_fenced_code_block_is_untouched(self) -> None:
+        tex = markdown_to_latex(
+            '## M\n\n```python\np = re.compile(r"[^a]")\n```\n\nA claim.[^a]\n\n[^a]: A note.\n',
+            NEURIPS_2025,
+            title="T",
+        )
+        assert r"\footnote{A note.}" in tex
+        assert "[^a]" in tex  # the regex character class survives verbatim
+
+    def test_body_ending_in_a_backslash_does_not_run_away(self) -> None:
+        tex = markdown_to_latex(
+            "A claim.[^a]\n\n[^a]: Body ending in a backslash \\\n",
+            NEURIPS_2025,
+            title="T",
+        )
+        body = tex.split(r"\footnote{", 1)[1]
+        assert not body.startswith("}")
+        assert r"\}" not in body[:80]
+
+    def test_undefined_reference_is_left_as_written(self) -> None:
+        out = _resolve_markdown_footnotes("Dangling[^zzz] ref.\n\n[^a]: unrelated.\n")
+        assert "[^zzz]" in out
+
+    def test_unreferenced_definition_is_kept(self) -> None:
+        """Standard Markdown drops it; losing author text silently is worse."""
+        out = _resolve_markdown_footnotes("Plain text.\n\n[^orphan]: Nobody points here.\n")
+        assert "Nobody points here." in _outside_footnotes(out)
+        assert _FN_OPEN not in out
+
+    def test_document_without_footnotes_is_unchanged(self) -> None:
+        markdown = "## M\n\nJust [cite2020key] and *text*.\n"
+        assert _resolve_markdown_footnotes(markdown) == markdown

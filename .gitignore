@@ -26,6 +26,13 @@ exp/
 logs/
 writing/
 
+# Paper artifacts for the CADCON round (63 MB of frozen runs, raw per-sample scores
+# and unsubmitted drafts). This repository is public and is not the release channel:
+# the paper's Reproducibility section points at Jacky628/cadcon-derangement-control,
+# which is where the frozen material is published. Kept out of git so that a
+# `git add -A` cannot push a draft, an author name or an unreleased dataset by accident.
+_paper_artifacts_*/
+
 # Root-level config (local overrides, not committed)
 /config.yaml
 /config.arc.yaml
