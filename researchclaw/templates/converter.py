@@ -1023,8 +1023,12 @@ def _build_body(sections: list[_Section], *, title: str = "") -> str:
         cmd = _level_map.get(effective_level, "paragraph")
         heading_tex = _escape_latex(sec.heading)
         # Strip leading manual section numbers: "1. Introduction" → "Introduction"
-        # Handles: "1 Intro", "2.1 Related", "3.2.1 Details", "1. Intro"
-        heading_tex = re.sub(r"^\d+(?:\.\d+)*\.?\s+", "", heading_tex)
+        # Handles: "1 Intro", "2.1 Related", "3.2.1 Details", "1. Intro", and the
+        # letter-prefixed form appendix subsections carry, "A.8 What the manifest
+        # covers" — LaTeX numbers the heading itself, so leaving the author's
+        # number in the title text prints it twice ("A.8  A.8 What the ...").
+        # A bare letter is not stripped: "A Study of ..." is a title, not a number.
+        heading_tex = re.sub(r"^(?:[A-Z]\.)?\d+(?:\.\d+)*\.?\s+", "", heading_tex)
         parts.append(f"\\{cmd}{{{heading_tex}}}")
         # Generate a label for cross-referencing
         if cmd in ("section", "subsection", "subsubsection"):
@@ -1298,6 +1302,69 @@ def _collect_table(lines: list[str], start: int) -> tuple[list[str], int]:
     return table, i
 
 
+_ATOMIC_RE = re.compile(r"\$[^$]*\$|`[^`]*`|\S+")
+_TEX_CMD_RE = re.compile(r"\\[a-zA-Z]+\s*")
+
+
+# Compound labels like CIRCLE+NGON+THIN and paths like a_b/c are single
+# unbreakable words to TeX, so one of them in a column forces the whole table
+# wider than the text width. These separators become break opportunities.
+_CELL_BREAK_RE = re.compile(r"(?<=[+/_])(?=[A-Za-z0-9])")
+
+
+def _cell_breakable(cell: str) -> str:
+    """Allow long compound words in a table cell to break after + / or _."""
+    def _one(word: str) -> str:
+        if len(word) <= TABLE_MIN_WRAP_CHARS or "$" in word or "\\" in word:
+            return word
+        return _CELL_BREAK_RE.sub(lambda _: "\\discretionary{}{}{}", word)
+
+    return " ".join(_one(w) for w in cell.split(" "))
+
+
+def _visual_len(cell: str) -> int:
+    """Roughly how many glyphs *cell* sets, as opposed to how long its source is.
+
+    Column widths were being estimated with ``len()``, which counts markup:
+    ``$5.9\\times10^{-7}$`` is eighteen source characters and about nine glyphs.
+    Numeric columns therefore looked far too wide to wrap and were left to
+    stretch the table until it had to be shrunk to fit.
+    """
+    s = _TEX_CMD_RE.sub(lambda m: "x" if m.group(0).startswith("\\times") else "", cell)
+    return len(s.replace("$", "").replace("{", "").replace("}", "").replace("\\", ""))
+
+
+def _longest_unbreakable(cells: list[str]) -> int:
+    """Length of the longest run in *cells* that cannot be broken across lines.
+
+    Giving a column a wrapping X width only helps if its content can actually
+    break inside that width. A cell of maths — ``6.1\\times10^{-14} / 8.5...`` —
+    cannot, so it overruns whatever width tabularx allots and the row sticks out
+    past the margin instead.
+    """
+    longest = 0
+    for cell in cells:
+        for tok in _ATOMIC_RE.findall(cell):
+            # measured on the whole token: _cell_breakable will offer breaks at
+            # + / and _, but those are opportunities, not guarantees, and sizing
+            # the column as though every one of them is taken overflows the row
+            longest = max(longest, _visual_len(tok))
+    return longest
+
+
+# One size for every table in a document. \small sits just below body text,
+# which is the conventional relationship and leaves tables legible.
+TABLE_FONT = "\\small"
+# A column is prose rather than a label or a number when it is wider than its
+# fair share of the line, and prose wraps instead of stretching the table. The
+# floor keeps short-column tables from wrapping headings they have room for.
+TABLE_MIN_WRAP_CHARS = 12
+# Roughly how many characters of table body fit on one text width at TABLE_FONT.
+# Used both to size the fair share and to decide when the non-wrapping columns
+# have already filled the line, leaving tabularx nothing to distribute.
+TABLE_LINE_BUDGET_CHARS = 72
+
+
 def _render_table(table_lines: list[str], caption: str = "") -> str:
     """Render a Markdown table as a LaTeX tabular inside a table environment.
 
@@ -1320,12 +1387,47 @@ def _render_table(table_lines: list[str], caption: str = "") -> str:
 
     table_num = _next_table_num()
 
-    # IMP-23: Detect wide tables that need resizebox
-    max_cell_len = max(
-        (len(c) for row in [header] + body_rows for c in row),
-        default=0,
-    )
-    needs_resize = ncols > 5 or max_cell_len > 25
+    # Uniform table typography.
+    #
+    # The previous behaviour wrapped wide tables in \resizebox{\columnwidth}{!},
+    # which scales a table to *exactly* fill the text width. The scale factor is
+    # then columnwidth/natural-width, so it differs per table: across one paper's
+    # fifteen tables the effective body size ran from 5.8pt to 10.8pt, narrow
+    # tables magnified above the surrounding prose and wide ones shrunk below
+    # legibility. Instead every table is set at one size; a column whose cells
+    # are long prose wraps (via tabularx) rather than stretching the table; and a
+    # table that is still too wide is shrunk but never magnified.
+    def rows_of_col(i: int) -> list[str]:
+        return [row[i] for row in [header] + body_rows if i < len(row)]
+
+    col_max = [max((_visual_len(c) for c in rows_of_col(i)), default=0)
+               for i in range(ncols)]
+    # A column wraps when it is wider than its fair share of the line. A fixed
+    # character threshold does not work across table shapes: 16 characters is a
+    # short label in a three-column table and half the line in a nine-column one.
+    fair_share = max(TABLE_MIN_WRAP_CHARS, TABLE_LINE_BUDGET_CHARS // max(ncols, 1))
+    wrap_cols = [
+        i
+        for i, w in enumerate(col_max)
+        if w > fair_share and _longest_unbreakable(rows_of_col(i)) <= fair_share
+    ]
+    # tabularx only helps if the columns that keep their natural width leave room
+    # for the X ones to live in. On a table of many numeric columns they do not,
+    # and tabularx hands X a near-zero width and lets every row overflow instead.
+    fixed_chars = sum(w for i, w in enumerate(col_max) if i not in wrap_cols)
+    if fixed_chars + 2 * ncols > TABLE_LINE_BUDGET_CHARS:
+        wrap_cols = []
+    if wrap_cols:
+        # tabularx sizes the table to \columnwidth exactly, letting the X columns
+        # absorb the slack, so no scaling is needed at all.
+        spec = "".join("X" if i in wrap_cols else a for i, a in enumerate(alignments))
+        env_begin = f"\\begin{{tabularx}}{{\\columnwidth}}{{{spec}}}"
+        env_end = "\\end{tabularx}"
+        needs_resize = False
+    else:
+        env_begin = f"\\begin{{tabular}}{{{col_spec}}}"
+        env_end = "\\end{tabular}"
+        needs_resize = ncols > 5 or max(col_max, default=0) > 25
 
     lines_out: list[str] = []
     lines_out.append("\\begin{table}[ht]")
@@ -1344,12 +1446,14 @@ def _render_table(table_lines: list[str], caption: str = "") -> str:
         lines_out.append(f"\\caption{{{auto_cap}}}")
     lines_out.append(f"\\label{{tab:{table_num}}}")
 
+    lines_out.append(TABLE_FONT)
     if needs_resize:
-        # BUG-109b fix: Use \columnwidth (works in both 1-col and 2-col layouts)
-        # \textwidth in 2-column formats (ICML) is full page width, causing
-        # floats wider than a column to be "lost" by LaTeX.
-        lines_out.append("\\resizebox{\\columnwidth}{!}{%")
-    lines_out.append(f"\\begin{{tabular}}{{{col_spec}}}")
+        # max width shrinks an over-wide table but leaves a narrow one alone;
+        # \resizebox{\columnwidth}{!} would magnify it instead. \columnwidth
+        # rather than \textwidth: in two-column formats (ICML) \textwidth is the
+        # full page and a float wider than a column gets lost (BUG-109b).
+        lines_out.append("\\adjustbox{max width=\\columnwidth}{%")
+    lines_out.append(env_begin)
     lines_out.append("\\toprule")
     lines_out.append(
         " & ".join(f"\\textbf{{{_convert_inline(c)}}}" for c in header) + " \\\\"
@@ -1359,12 +1463,13 @@ def _render_table(table_lines: list[str], caption: str = "") -> str:
         # Pad row to match header length
         padded = row + [""] * (ncols - len(row))
         lines_out.append(
-            " & ".join(_convert_inline(c) for c in padded[:ncols]) + " \\\\"
+            " & ".join(_cell_breakable(_convert_inline(c)) for c in padded[:ncols])
+            + " \\\\"
         )
     lines_out.append("\\bottomrule")
-    lines_out.append("\\end{tabular}")
+    lines_out.append(env_end)
     if needs_resize:
-        lines_out.append("}")  # close resizebox
+        lines_out.append("}")  # close \\adjustbox
     lines_out.append("\\end{table}")
 
     return "\n".join(lines_out)
