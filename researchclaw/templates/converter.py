@@ -292,6 +292,27 @@ def _sanitize_latex_output(
     # 8. Remove consecutive blank lines (more than 2)
     tex = re.sub(r"\n{3,}", "\n\n", tex)
 
+    # 9. Close out Markdown footnotes: the sentinels planted by
+    #    _resolve_markdown_footnotes have carried their bodies through inline
+    #    conversion and escaping, so they can now become real \footnote{}.
+    tex = re.sub(
+        re.escape(_FN_OPEN) + r"(.*?)" + re.escape(_FN_CLOSE),
+        lambda m: "\\footnote{" + _footnote_body(m.group(1)) + "}",
+        tex,
+        flags=re.DOTALL,
+    )
+    # A sentinel with no partner means an intervening stage split the pair.
+    # Printing "XFOOTNOTEOPENX" into the paper is the one outcome worse than
+    # losing the note, so drop the marker and say so.
+    if _FN_OPEN in tex or _FN_CLOSE in tex:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Markdown footnote sentinels survived conversion (the pair was "
+            "split by an intervening stage); dropping the markers"
+        )
+        tex = tex.replace(_FN_OPEN, "").replace(_FN_CLOSE, "")
+
     return tex
 
 
@@ -341,6 +362,150 @@ def _round_raw_metrics(text: str) -> str:
         except (ValueError, OverflowError):
             return m.group(0)
     return _RAW_METRIC_RE.sub(_rounder, text)
+
+
+# Sentinels for footnote bodies: plain letters, so they pass through inline
+# conversion, LaTeX escaping and the Unicode stripper untouched.
+_FN_OPEN = "XFOOTNOTEOPENX"
+_FN_CLOSE = "XFOOTNOTECLOSEX"
+
+# A definition is the rest of its own line plus any *indented* continuation
+# lines — the Pandoc rule.  Matching the body with DOTALL up to the next blank
+# line instead would, whenever a definition is not followed by a blank line,
+# swallow the block after it (a heading, a paragraph, a list, a table) into the
+# footnote and delete it from the paper, with no error at any later stage.
+_FOOTNOTE_DEF_RE = re.compile(
+    r"^[ \t]{0,3}\[\^([A-Za-z0-9_.-]+)\]:[ \t]*([^\n]*(?:\n[ \t]+\S[^\n]*)*)\n?",
+    re.MULTILINE,
+)
+_FOOTNOTE_REF_RE = re.compile(r"\[\^([A-Za-z0-9_.-]+)\]")
+# Odd-numbered pieces of this split are fenced code blocks, where Markdown
+# markup is content and must not be interpreted.
+_FENCE_SPLIT_RE = re.compile(
+    r"(^[ \t]*```[^\n]*\n.*?^[ \t]*```[ \t]*$)", re.MULTILINE | re.DOTALL
+)
+# Positions LaTeX will not accept a \footnote in: it is illegal inside
+# \caption{}, it tears \section{} apart and corrupts the \label slug derived
+# from the heading text, and a table cell puts the note inside a float where it
+# is never printed.
+_FN_UNSAFE_LINE_RE = re.compile(r"^(?:[ \t]{0,3}#{1,6}\s|[ \t]*\||[ \t]*!\[)")
+
+
+def _footnote_body(body: str) -> str:
+    """Make a converted footnote body safe as the argument of ``\\footnote{}``.
+
+    A body ending in a backslash would turn the closing brace into an escaped
+    ``\\}`` and run the argument away to the end of the file, so trailing
+    backslashes go.  Unbalanced braces cannot be repaired without guessing at
+    the author's markup, so they are reported instead.
+    """
+    body = body.strip().rstrip("\\")
+    if body.count("{") != body.count("}"):
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Markdown footnote body has unbalanced braces and will not "
+            "compile: %s", body[:120],
+        )
+    return body
+
+
+def _resolve_markdown_footnotes(text: str) -> str:
+    """Inline Markdown footnotes (``[^id]`` plus a ``[^id]: body`` definition).
+
+    Without this the definition line survives as a literal paragraph and the
+    reference as ``[\\textasciicircum{}id]``.  The body is lifted to the
+    reference site between sentinels; ``_sanitize_latex_output`` turns the
+    sentinel pair into ``\\footnote{}`` once the body has been converted along
+    with its surrounding prose.
+
+    Three cases are deliberately left as the author wrote them, each with a
+    warning, because rendering them would produce broken LaTeX or lose text:
+    a reference in a heading, table row or figure caption (LaTeX takes no
+    footnote there); a reference with no matching definition; and anything
+    inside a fenced code block.  An unreferenced definition is likewise kept
+    rather than deleted: standard Markdown drops it, but losing author text
+    silently is the failure this module is least willing to have.
+
+    Known limitation: an id referenced more than once produces that many
+    separate footnotes rather than one shared number, so repeats are warned
+    about too.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    pieces = _FENCE_SPLIT_RE.split(text)
+    prose = range(0, len(pieces), 2)
+
+    definitions: dict[str, str] = {}
+    for i in prose:
+        for match in _FOOTNOTE_DEF_RE.finditer(pieces[i]):
+            definitions[match.group(1)] = " ".join(match.group(2).split())
+    if not definitions:
+        return text
+
+    # Classify every reference before touching anything: an id with even one
+    # reference in a position LaTeX cannot take keeps both its markers and its
+    # definition, so the author sees raw Markdown rather than losing the note.
+    counts: dict[str, int] = {}
+    blocked: set[str] = set()
+    for i in prose:
+        for line in _FOOTNOTE_DEF_RE.sub("", pieces[i]).split("\n"):
+            for match in _FOOTNOTE_REF_RE.finditer(line):
+                name = match.group(1)
+                counts[name] = counts.get(name, 0) + 1
+                if _FN_UNSAFE_LINE_RE.match(line):
+                    blocked.add(name)
+
+    for name in sorted(blocked):
+        logger.warning(
+            "Markdown footnote [^%s] is referenced in a heading, table row or "
+            "figure caption; LaTeX accepts no footnote there, so it is left "
+            "unrendered — move the reference into body prose",
+            name,
+        )
+    for name in sorted(set(counts) - set(definitions)):
+        logger.warning(
+            "Markdown footnote [^%s] is referenced but never defined; the "
+            "reference is left as written",
+            name,
+        )
+    for name in sorted(set(definitions) - set(counts)):
+        logger.warning(
+            "Markdown footnote [^%s] is defined but never referenced; the "
+            "definition is left as written rather than deleted",
+            name,
+        )
+    for name in sorted(n for n, c in counts.items() if c > 1 and n not in blocked):
+        logger.warning(
+            "Markdown footnote [^%s] is referenced %d times; each reference "
+            "becomes its own numbered footnote",
+            name,
+            counts[name],
+        )
+
+    resolvable = {
+        name: body
+        for name, body in definitions.items()
+        if name not in blocked and name in counts
+    }
+
+    def _inline(match: re.Match[str]) -> str:
+        body = resolvable.get(match.group(1))
+        if body is None:
+            return match.group(0)
+        return f"{_FN_OPEN}{body}{_FN_CLOSE}"
+
+    def _drop_definition(match: re.Match[str]) -> str:
+        return "" if match.group(1) in resolvable else match.group(0)
+
+    for i in prose:
+        piece = _FOOTNOTE_DEF_RE.sub(_drop_definition, pieces[i])
+        pieces[i] = "\n".join(
+            line if _FN_UNSAFE_LINE_RE.match(line) else _FOOTNOTE_REF_RE.sub(_inline, line)
+            for line in piece.split("\n")
+        )
+    return "".join(pieces)
 
 
 def _preprocess_markdown(md: str) -> str:
@@ -417,6 +582,9 @@ def _preprocess_markdown(md: str) -> str:
 
     # 2e. Clean NOT_IN_BIB citation markers: [?key:NOT_IN_BIB] → remove
     text = re.sub(r"\[\?[a-zA-Z0-9_:-]+:NOT_IN_BIB\]", "", text)
+
+    # 2f. Resolve Markdown footnotes ([^id] + [^id]: body) into sentinels.
+    text = _resolve_markdown_footnotes(text)
 
     # 3. Convert blockquotes: > text → \begin{quote}text\end{quote}
     #    Collect consecutive > lines into a single quote block.
