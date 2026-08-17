@@ -33,6 +33,7 @@ _NEW_PARAM_MODELS = frozenset(
         "gpt-5.2",
         "gpt-5.3",
         "gpt-5.4",
+        "gpt-5.5",
     }
 )
 
@@ -43,6 +44,39 @@ _NO_TEMPERATURE_MODELS = frozenset(
         "o4-mini",
     }
 )
+
+# Reasoning models that spend hidden reasoning tokens out of the SAME max_tokens
+# budget as the visible answer. Unlike _NEW_PARAM_MODELS (OpenAI o-series/gpt-5,
+# which need the max_completion_tokens param name), these use the standard
+# `max_tokens` param — e.g. gemini-2.5 via OpenRouter. At a low budget the
+# reasoning can consume most/all of it and leave the visible output truncated or
+# entirely empty (finish_reason=length). We floor the budget so reasoning has
+# headroom without starving the answer. Substring match so provider-prefixed ids
+# ("google/gemini-2.5-pro") are caught.
+_REASONING_MODEL_MARKERS = (
+    "gemini-2.5",
+    "gemini-2.0-flash-thinking",
+)
+_REASONING_MIN_TOKENS = 8192
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """True for models whose hidden reasoning tokens share the max_tokens budget
+    (and which use the standard max_tokens param, not max_completion_tokens)."""
+    m = (model or "").lower()
+    return any(marker in m for marker in _REASONING_MODEL_MARKERS)
+
+
+def _strip_provider(model: str) -> str:
+    """Strip an OpenRouter-style provider prefix: 'openai/gpt-5.4' -> 'gpt-5.4'."""
+    return model.split("/", 1)[1] if model and "/" in model else (model or "")
+
+
+def _supports_reasoning_effort(model: str) -> bool:
+    """True for OpenAI reasoning models (o-series, gpt-5.x) that accept a
+    ``reasoning.effort`` param via OpenAI/OpenRouter (provider-prefix tolerant)."""
+    m = _strip_provider(model).lower()
+    return m.startswith(("o1", "o3", "o4", "gpt-5"))
 
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -88,6 +122,10 @@ class LLMConfig:
     # MetaClaw bridge: fallback URL if primary (proxy) is unreachable
     fallback_url: str = ""
     fallback_api_key: str = ""
+    # Reasoning effort for OpenAI reasoning models (o-series, gpt-5.x) via
+    # OpenAI/OpenRouter: xhigh|high|medium|low|minimal|none. Empty => provider
+    # default. Non-reasoning models ignore it.
+    reasoning_effort: str = ""
 
 
 class LLMClient:
@@ -163,6 +201,7 @@ class LLMClient:
             fallback_url=fallback_url,
             fallback_api_key=fallback_api_key,
             timeout_sec=getattr(rc_config.llm, "timeout_sec", 600),
+            reasoning_effort=getattr(rc_config.llm, "reasoning_effort", "") or "",
         )
         client = cls(config)
 
@@ -173,6 +212,67 @@ class LLMClient:
 
             client._anthropic = AnthropicAdapter(
                 original_base_url, original_api_key, config.timeout_sec
+            )
+        return client
+
+    @classmethod
+    def reviewer_from_rc_config(cls, rc_config: Any) -> "LLMClient | None":
+        """Build an INDEPENDENT reviewer/judge client (P0-3).
+
+        Returns None when ``llm.reviewer_model`` is empty (callers then fall
+        back to the generator client, preserving legacy behaviour).
+
+        When only ``reviewer_model`` is set, the reviewer reuses the main
+        provider/base_url/api_key but talks to a different model. When
+        ``reviewer_provider``/``reviewer_base_url``/``reviewer_api_key(_env)``
+        are set, a fully independent provider is used. The reviewer never
+        falls back to the author model (empty ``fallback_models``) so its
+        judgement stays decoupled from the generator.
+        """
+        from researchclaw.llm import PROVIDER_PRESETS
+
+        llm = rc_config.llm
+        reviewer_model = str(getattr(llm, "reviewer_model", "") or "").strip()
+        if not reviewer_model:
+            return None
+
+        provider = (
+            str(getattr(llm, "reviewer_provider", "") or "").strip()
+            or getattr(llm, "provider", "openai")
+        )
+        preset = PROVIDER_PRESETS.get(provider, {})
+        preset_base_url = preset.get("base_url")
+
+        base_url = (
+            str(getattr(llm, "reviewer_base_url", "") or "").strip()
+            or llm.base_url
+            or preset_base_url
+            or ""
+        )
+
+        reviewer_key_env = str(getattr(llm, "reviewer_api_key_env", "") or "").strip()
+        api_key = (
+            str(getattr(llm, "reviewer_api_key", "") or "").strip()
+            or (os.environ.get(reviewer_key_env, "") if reviewer_key_env else "")
+            or str(llm.api_key or os.environ.get(llm.api_key_env, "") or "")
+        )
+
+        config = LLMConfig(
+            base_url=base_url,
+            api_key=api_key,
+            wire_api=getattr(llm, "wire_api", "chat_completions"),
+            primary_model=reviewer_model,
+            fallback_models=[],
+            timeout_sec=getattr(llm, "timeout_sec", 600),
+            reasoning_effort=getattr(llm, "reasoning_effort", "") or "",
+        )
+        client = cls(config)
+
+        if provider in ("anthropic", "kimi-anthropic"):
+            from .anthropic_adapter import AnthropicAdapter
+
+            client._anthropic = AnthropicAdapter(
+                base_url, api_key, config.timeout_sec
             )
         return client
 
@@ -248,7 +348,7 @@ class LLMClient:
         """
         is_reasoning = any(
             self.config.primary_model.startswith(p) for p in _NEW_PARAM_MODELS
-        )
+        ) or _is_reasoning_model(self.config.primary_model)
         min_tokens = 64 if is_reasoning else 1
         try:
             _ = self.chat(
@@ -419,11 +519,22 @@ class LLMClient:
                     body["temperature"] = _temp
 
                 # Use correct token parameter based on model
-                if any(model.startswith(prefix) for prefix in _NEW_PARAM_MODELS):
+                if any(_strip_provider(model).startswith(prefix) for prefix in _NEW_PARAM_MODELS):
                     reasoning_min = 32768
                     body["max_completion_tokens"] = max(max_tokens, reasoning_min)
+                elif _is_reasoning_model(model):
+                    # Standard max_tokens param, but floor the budget so hidden
+                    # reasoning tokens don't starve the visible answer to empty.
+                    body["max_tokens"] = max(max_tokens, _REASONING_MIN_TOKENS)
                 else:
                     body["max_tokens"] = max_tokens
+
+                # Pass reasoning effort to OpenAI reasoning models (o-series,
+                # gpt-5.x) when configured. Gated so non-reasoning models that
+                # reject a `reasoning` field do not 400.
+                _eff = (self.config.reasoning_effort or "").strip()
+                if _eff and _supports_reasoning_effort(model):
+                    body["reasoning"] = {"effort": _eff}
 
             if json_mode:
                 # Many OpenAI-compatible providers don't support the

@@ -116,6 +116,51 @@ BANNED_MODULES: frozenset[str] = frozenset(
     }
 )
 
+# ---------------------------------------------------------------------------
+# P6: security profiles. The full sets above are the "strict" policy (no
+# provisioning / no network). When the experiment runs with provisioning
+# enabled (network_policy != "none"), real experiments legitimately need to
+# download datasets (requests/urllib/http/shutil), run external tools in
+# isolation (subprocess), and execute transpiled code (exec/compile e.g. a CAD
+# kernel oracle). Those are relaxed, but a high-risk core stays banned in EVERY
+# profile. (academic-rigor-first: the environment enables the rigorous
+# experiment; the human gate is the safety backstop.)
+# ---------------------------------------------------------------------------
+# Note: `signal` is NOT always-banned — it is legitimately used for the
+# time-guard ("stop at 80% of budget"). It stays banned in `strict` (via
+# BANNED_MODULES) but is allowed in provisioned/setup. ctypes (arbitrary native
+# calls), socket and the mail/ftp modules remain always-banned.
+_ALWAYS_BANNED_MODULES: frozenset[str] = frozenset(
+    {"socket", "ftplib", "smtplib", "ctypes"}
+)
+_ALWAYS_DANGEROUS_CALLS: frozenset[str] = frozenset(
+    {
+        "os.system", "os.popen",
+        "os.exec", "os.execl", "os.execle", "os.execlp", "os.execlpe",
+        "os.execv", "os.execve", "os.execvp", "os.execvpe",
+    }
+)
+_ALWAYS_DANGEROUS_BUILTINS: frozenset[str] = frozenset({"eval", "__import__"})
+
+SECURITY_PROFILES: frozenset[str] = frozenset({"strict", "provisioned", "setup"})
+
+
+def _effective_bans(
+    profile: str,
+) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Return (banned_modules, dangerous_calls, dangerous_builtins) for *profile*.
+
+    "strict" (default) = the full hardcoded policy. "provisioned"/"setup" relax
+    download/subprocess/exec needs but keep the always-banned high-risk core.
+    """
+    if profile in ("provisioned", "setup"):
+        return (
+            _ALWAYS_BANNED_MODULES,
+            _ALWAYS_DANGEROUS_CALLS,
+            _ALWAYS_DANGEROUS_BUILTINS,
+        )
+    return BANNED_MODULES, DANGEROUS_CALLS, DANGEROUS_BUILTINS
+
 # Packages considered safe / always available in experiment sandbox.
 SAFE_STDLIB: frozenset[str] = frozenset(
     {
@@ -207,16 +252,24 @@ COMMON_SCIENCE: frozenset[str] = frozenset(
 
 
 class _SecurityVisitor(ast.NodeVisitor):
-    """Walk AST to detect dangerous calls and imports."""
+    """Walk AST to detect dangerous calls and imports (profile-aware)."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        banned_modules: frozenset[str] = BANNED_MODULES,
+        dangerous_calls: frozenset[str] = DANGEROUS_CALLS,
+        dangerous_builtins: frozenset[str] = DANGEROUS_BUILTINS,
+    ) -> None:
         self.issues: list[ValidationIssue] = []
+        self._banned_modules = banned_modules
+        self._dangerous_calls = dangerous_calls
+        self._dangerous_builtins = dangerous_builtins
 
     # -- function calls --
 
     def visit_Call(self, node: ast.Call) -> None:
         name = _resolve_call_name(node.func)
-        if name in DANGEROUS_BUILTINS:
+        if name in self._dangerous_builtins:
             self.issues.append(
                 ValidationIssue(
                     severity="error",
@@ -226,7 +279,7 @@ class _SecurityVisitor(ast.NodeVisitor):
                     col=node.col_offset,
                 )
             )
-        elif name in DANGEROUS_CALLS:
+        elif name in self._dangerous_calls:
             self.issues.append(
                 ValidationIssue(
                     severity="error",
@@ -243,7 +296,7 @@ class _SecurityVisitor(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             top = alias.name.split(".")[0]
-            if top in BANNED_MODULES:
+            if top in self._banned_modules:
                 self.issues.append(
                     ValidationIssue(
                         severity="error",
@@ -257,7 +310,7 @@ class _SecurityVisitor(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module:
             top = node.module.split(".")[0]
-            if top in BANNED_MODULES:
+            if top in self._banned_modules:
                 self.issues.append(
                     ValidationIssue(
                         severity="error",
@@ -329,17 +382,62 @@ def validate_syntax(code: str) -> CodeValidation:
     return result
 
 
-def validate_security(code: str) -> CodeValidation:
-    """Scan *code* AST for dangerous calls and imports."""
+def validate_security(code: str, profile: str = "strict") -> CodeValidation:
+    """Scan *code* AST for dangerous calls and imports under *profile*.
+
+    profile: "strict" (default, full bans) | "provisioned" | "setup" (relax
+    download/subprocess/exec, keep the always-banned high-risk core).
+    """
     result = CodeValidation()
     try:
         tree = ast.parse(code)
     except SyntaxError:
         # If can't parse, skip security — syntax check will catch it.
         return result
-    visitor = _SecurityVisitor()
+    banned_mods, danger_calls, danger_builtins = _effective_bans(profile)
+    visitor = _SecurityVisitor(banned_mods, danger_calls, danger_builtins)
     visitor.visit(tree)
     result.issues.extend(visitor.issues)
+    return result
+
+
+_JSON_LITERALS = {"null": "None", "true": "True", "false": "False"}
+
+
+def validate_json_literals(code: str) -> CodeValidation:
+    """Flag bare ``null`` / ``true`` / ``false`` used as Python names.
+
+    These are JSON literals, not Python — using them as a name raises
+    NameError at runtime. This is almost always a JSON-vs-Python slip (it made a
+    generated CadQuery eval harness report every valid solid as invalid, so the
+    experiment's metric was silently 0). We error unless the name is actually
+    bound in the module (e.g. an explicit ``null = None`` shim).
+    """
+    result = CodeValidation()
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return result  # syntax check reports it
+    bound: set[str] = set()
+    used: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Store) and node.id in _JSON_LITERALS:
+                bound.add(node.id)
+            elif isinstance(node.ctx, ast.Load) and node.id in _JSON_LITERALS:
+                used.setdefault(node.id, node.lineno)
+    for name, line in used.items():
+        if name in bound:
+            continue
+        result.issues.append(
+            ValidationIssue(
+                severity="error",
+                category="syntax",
+                message=(f"JSON literal '{name}' used as a Python name "
+                         f"(use {_JSON_LITERALS[name]}) — raises NameError at runtime"),
+                line=line,
+            )
+        )
     return result
 
 
@@ -375,11 +473,12 @@ def validate_code(
     available_packages: set[str] | None = None,
     skip_security: bool = False,
     skip_imports: bool = False,
+    security_profile: str = "strict",
 ) -> CodeValidation:
     """Run all validations and return a combined :class:`CodeValidation`.
 
     1. Syntax check (always)
-    2. Security scan (unless *skip_security*)
+    2. Security scan (unless *skip_security*), under *security_profile*
     3. Import availability (unless *skip_imports*)
     """
     combined = CodeValidation()
@@ -391,9 +490,12 @@ def validate_code(
         # No point running further checks if code doesn't parse
         return combined
 
+    # 1b. JSON-literal-as-Python-name (null/true/false) — runtime NameError
+    combined.issues.extend(validate_json_literals(code).issues)
+
     # 2. Security
     if not skip_security:
-        security = validate_security(code)
+        security = validate_security(code, profile=security_profile)
         combined.issues.extend(security.issues)
 
     # 3. Import availability
@@ -1108,6 +1210,11 @@ def check_filename_collisions(files: dict[str, str]) -> list[str]:
     _SHADOW_RISK: set[str] = {
         # pip packages frequently installed as transitive deps
         "config", "test", "tests", "types", "typing_extensions",
+        # ML/DL packages likely present in experiment envs
+        "numpy", "pandas", "scipy", "sklearn", "torch", "tensorflow",
+        "transformers", "tokenizers", "datasets", "peft", "accelerate",
+        "bitsandbytes", "trl", "evaluate", "safetensors", "huggingface_hub",
+        "wandb", "tensorboard", "matplotlib", "seaborn", "plotly",
         # stdlib modules the LLM might accidentally shadow
         "io", "logging", "json", "time", "random", "copy", "math",
         "os", "sys", "collections", "functools", "abc", "re",

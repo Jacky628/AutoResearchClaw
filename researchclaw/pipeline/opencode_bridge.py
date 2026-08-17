@@ -237,24 +237,520 @@ Read the files in the current workspace:
 - EXPERIMENT_PLAN.yaml — the full experiment design
 - GUIDANCE.md — topic, metric, environment constraints, domain-specific guidance
 
+ACADEMIC RIGOR IS MANDATORY (the design's real tools/data, not stand-ins):
+- The plan in EXPERIMENT_PLAN.yaml declares the REAL models, tools, libraries
+  (see its `environment` block) and datasets the experiment requires. You MUST
+  actually import and use them. The setup phase installs declared pip packages
+  and downloads declared datasets, so they ARE available — use them.
+- If the plan specifies an LLM / fine-tuning, ACTUALLY load and train it
+  (e.g. transformers + peft) — do NOT replace it with a toy torch.nn model.
+- If the plan specifies a real evaluator/oracle (e.g. a CAD kernel like
+  cadquery), ACTUALLY execute it to compute the metric — do NOT write a
+  rule-based / regex / length-check "mimic" of it.
+- NEVER fabricate or fall back to synthetic/random/dummy data unless the plan
+  EXPLICITLY designates synthetic data for this domain. Concretely: do NOT define
+  any `generate_synthetic*` / `make_synthetic` / dummy-data function, and do NOT
+  write a `try: <load real> except: <synthesize>` fallback. If the declared real
+  dataset cannot be downloaded, `raise RuntimeError("<dataset> unavailable")` —
+  a failed run is acceptable; fabricated data is NOT.
+- These substitutions are automatically detected and the stage will be BLOCKED.
+- PREFER safe library APIs: download datasets via `datasets`/`huggingface_hub`
+  (not raw `requests`); import and call tools like a CAD kernel IN-PROCESS with
+  try/except for crash handling. Use `subprocess` only when process isolation is
+  genuinely required (e.g. guarding against a native crash).
+
+EVALUATOR / ORACLE CORRECTNESS (CRITICAL — a lenient oracle silently voids the ENTIRE experiment):
+- A validity/quality oracle must be STRICT: its except / error / parse-failure /
+  empty-result branch MUST report INVALID (False). NEVER "count as success if no
+  exception fired", never treat a missing or degenerate result as valid. A result
+  counts as valid ONLY if it genuinely passes the check (e.g. for a CAD kernel: a
+  non-degenerate solid with positive bounding-box extents AND .val().isValid()).
+- ORACLE SELF-TEST FIRST: before calibration, run ONE trivially-valid case through the
+  oracle (e.g. for a CAD kernel: `cq.Workplane("XY").box(1,1,1)`) — it MUST score
+  VALID. If it does not, the oracle IMPLEMENTATION itself is broken (wrong API name,
+  bad subprocess wiring, inverted logic): print `ORACLE_SELF_TEST_FAILED: <error>` and
+  raise. Use the library's exact Python API (check attribute names carefully — e.g.
+  cadquery solids use `.isValid()`, not the OCC C++ spelling `IsValid()`).
+  RETRY the self-test a few times (e.g. 3) with a generous timeout before raising: a
+  subprocess oracle's FIRST import of a heavy kernel (cadquery/OCP) can be cold and
+  exceed a tight timeout once — a genuinely broken oracle fails every attempt, so retry
+  distinguishes a one-off cold-start flake from a real break. Also: do NOT clobber a
+  caller-supplied timeout (no `timeout = None` line that overrides the argument).
+- DATA FORMAT must match the oracle's input: implement EVERY data preprocessing /
+  format-conversion step the plan declares (e.g. a deterministic transpiler from a
+  structured JSON sequence format to executable code). If the dataset field is
+  structured data (JSON) but the oracle executes code, you MUST implement and apply
+  the converter for BOTH training targets and oracle inputs — never feed raw JSON to
+  an execution oracle.
+- CALIBRATE the oracle against GROUND TRUTH before trusting any number: run a sample
+  of REAL reference outputs (the dataset's ground-truth target sequences) through the
+  SAME oracle and print exactly `ORACLE_CALIBRATION: ground_truth_validity=<val>` (one
+  line). If ground-truth scores ~0, the oracle pipeline is BROKEN (oracle bug, missing
+  format conversion, or wrong field) — fix it before running any condition.
+  Ground-truth validity is the realistic CEILING.
+- CALIBRATE THE GENERATION PATH TOO (oracle calibration alone misses it): before any
+  condition runs, MEASURE the dataset's actual target lengths (tokens AND whether
+  programs are single-line — never assume multi-line) and derive from them:
+  (a) the prompt/completion split — split by token or character FRACTION (e.g. first
+  30% of characters), NEVER by line count, and assert the prompt is a strict proper
+  prefix (prompt != full target); (b) set max_new_tokens to a TIGHT cap just above
+  the p95 completion length (e.g. ceil(p95 * 1.3)), NOT a large round number far
+  above p95. A cap far larger than p95 is harmful, not safe: an under-trained model
+  that does not emit EOS will RAMBLE past the real program end up to the cap, and that
+  trailing garbage (i) corrupts the program so the execution oracle scores it INVALID
+  and (ii) makes every generation take cap-many tokens, so eval/RL crawl. Then
+  generate a few samples and print
+  `GENERATION_CALIBRATION: truncated_frac=<f> eos_frac=<f>` — if most generations hit
+  the max_new_tokens cap (truncated_frac high), completions can NEVER be complete
+  programs and every validity will be a meaningless 0.0: fix the budget before
+  training anything.
+- ALWAYS pass eos_token_id to generate() so well-formed outputs stop early. Before
+  handing a generation to an execution oracle you MUST extract the valid program
+  prefix — do NOT rely on EOS alone. An under-trained model frequently emits NO EOS
+  at all (eos_frac≈0, truncated_frac≈1.0); stripping "everything after EOS" then does
+  nothing and the full cap-length ramble is scored INVALID. So implement a real
+  program-boundary extractor that, EVEN WHEN NO EOS IS PRESENT, returns the FIRST
+  COMPLETE program — NOT the "longest syntactically-compiling prefix". CRITICAL: a
+  model that doesn't emit EOS keeps going and appends DEGENERATE-but-syntactically-
+  valid continuations (e.g. it re-assigns the result var: `result = (...valid...)`
+  then `result = (result...extrude(0.0))` — a zero-size op). The longest-COMPILING
+  prefix includes those, and EXECUTING the whole then fails (e.g. CAD throws a
+  construction error) even though the FIRST block was a valid solid — silently
+  zeroing validity. So extract the first complete program: parse and keep up to the
+  FIRST top-level assignment of the result variable (drop later re-assignments), or
+  equivalently the longest prefix that EXECUTES to a valid object (not just compiles).
+  Apply this in EVERY validity-eval path, not just one helper.
+- THE COMPLETION IS HEADLESS — reconstruct the FULL program (prompt + completion) before you
+  extract/score. When generation decodes only the NEW tokens (out[:, prompt_len:]), the program
+  HEAD lives in the PROMPT, not the completion: for a prefix→completion task the prompt holds the
+  imports and the result assignment (e.g. `result = cq.Workplane(...)`) and the model emits only
+  the continuation. The boundary extractor keys on the FIRST top-level `result = ...` assignment,
+  so handing it the completion ALONE is a headless fragment with NO result-assignment → it finds
+  no complete program → validity 0 even for a WORKING model (this silently zeroed a whole run).
+  So build `full = prompt + decoded_completion` and run the extractor + oracle on `full`. Any
+  in-training CANARY probe MUST extract on the SAME prompt+completion the eval does, or the canary
+  and the real eval disagree and you trust the wrong one. THIS ALSO APPLIES TO RL/GRPO REWARD
+  FUNCTIONS: a TRL reward_func receives the completion HEADLESS (the prompt is passed separately as
+  `prompts`), so inside the reward you MUST `full = prompts[i] + completions[i]` before extract +
+  oracle/proxy — otherwise the headless fragment has no result-assignment, the oracle scores every
+  sample invalid, and the reward sticks at the floor (a DEAD reward signal that silently kills RL).
+  Likewise a proxy/learned reward must be SCORED on the same full-program form it was TRAINED on.
+- EVAL GENERATION EFFICIENCY (eval/proxy/RL generation dominates wall-clock when the
+  model does not emit EOS — every sample runs to the cap; run-4 eval was ~90s/sample,
+  ~75 min for 50): (1) cap eval/collection generation at ~p95 of completion length
+  (NOT p95×1.3 — the boundary extractor already salvages the valid prefix, so a
+  tighter cap costs almost no validity and is ~1.5× faster); (2) load the model for
+  GENERATION/eval in fp16/bf16, not 4-bit — 4-bit dequantizes every token (~2-3×
+  slower) and a <=3B model fits one card in fp16 anyway (keep 4-bit QLoRA for
+  TRAINING only). To use a QLoRA adapter that was TRAINED on a 4-bit base for
+  fp16 eval, just load an fp16 base and attach the adapter
+  (`PeftModel.from_pretrained(fp16_base, adapter_dir)`) — this is standard, no
+  merge needed and the small quantization-vs-fp16 numeric shift is harmless;
+  (3) BATCH the eval generations (pad a batch of prompts and call
+  generate once) instead of one sample at a time — 2-4× on a single GPU. Combined,
+  these cut eval from ~90s to ~15-25s/sample.
+- EVERY GENERATIVE MODEL'S TRAINING SEQUENCES MUST END WITH ITS STOP/EOS TOKEN
+  (root cause of "model never stops"): for SFT, append `tokenizer.eos_token` to
+  every training text (`text = code + tokenizer.eos_token`); for a FROM-SCRATCH
+  token model, append the exact reserved EOS id its generate loop stops on (e.g.
+  if generation breaks on `next_id == 1`, training sequences must end with 1 —
+  and that id must not collide with a real data token). Without it the model never
+  learns to terminate → at eval eos_frac=0, every generation runs to the token
+  cap, output is truncated/incomplete, validity collapses to ~0 (full-scale only —
+  a 1-epoch smoke is under-trained so eos_frac=0 there too and CANNOT reveal this;
+  it only surfaces after real training). This silently invalidated a whole run.
+  TRUNCATE IN TOKENS, NOT CHARS, leaving room for EOS: tokenize then keep the first
+  (max_seq_length - few) tokens and append EOS — char-based truncation (e.g.
+  code[:2000]) can still exceed max_seq_length in TOKENS, so SFTTrainer's
+  max_seq_length truncation drops the trailing EOS (this is exactly how an
+  EOS-appended fix can still fail). Also measure the REAL token-length of the data
+  (it can be far longer than a char count implies — measure on the REAL data with the
+  REAL tokenizer; e.g. DeepCAD CadQuery programs measured ~168 median / ~540 p95 /
+  ~862 p99 / ~1000 max tokens over 500 samples) and set max_seq_length / max_completion_length
+  with headroom over it, or accept that long sequences train as truncated prefixes.
+  ALSO — THE PAD TOKEN MUST DIFFER FROM THE EOS TOKEN (a second way an EOS-appended fix
+  silently fails): the default HF `DataCollatorForLanguageModeling` (SFTTrainer's default
+  collator) masks labels BY VALUE — `labels[labels == pad_token_id] = -100` — so if
+  pad_token == eos_token (the Qwen default: both `<|endoftext|>`), the REAL trailing EOS
+  label is masked to -100 too and the model gets NO gradient on EOS → never learns to stop
+  even though EOS is in the data. Force a DISTINCT existing special token as pad (e.g.
+  `<|fim_pad|>`), do NOT `tokenizer.pad_token = tokenizer.eos_token`; an in-vocab token
+  needs no embedding resize. (A from-scratch model with a position/attention-based collator
+  that pads with a reserved id != EOS is already fine — this only bites value-based collators.)
+  Note the build-time EOS assertion below does NOT catch this (the data still ends in EOS;
+  the masking happens in the collator), so it must be guarded separately.
+  ASSERT IT AT BUILD TIME (this is the only check that catches the bug regardless
+  of scale): right after building the training dataset, assert that a sample's
+  last token == the EOS id, e.g. `assert ds[0]["input_ids"][-1] == tokenizer.eos_token_id`
+  (or the reserved EOS id for a from-scratch model). Execution-based smoke CANNOT
+  catch this — a 1-epoch smoke is under-trained so eos_frac=0 and validity~0 there
+  whether or not EOS is in the data, so the symptom is indistinguishable from
+  normal under-training; only a deterministic build-time assertion fails fast.
+  More generally, guard correctness PROPERTIES that an under-trained smoke run
+  cannot reveal (EOS-in-data, label balance, feature dims) with cheap static
+  assertions on the prepared data, not by inspecting tiny-scale metrics.
+- ADDED-VOCAB / TOKENIZATION ABLATIONS (when a hypothesis claims a special TOKEN
+  representation of some signal helps): (1) add the new tokens as REAL vocab tokens —
+  `tokenizer.add_tokens([...], special_tokens=True)` then
+  `model.resize_token_embeddings(len(tokenizer))` — NOT as plain-text comments (those
+  tokenize to subwords with no dedicated embedding, so the "token" arm is a silent no-op).
+  (2) Train ONLY the new embedding rows: keep `modules_to_save=["embed_tokens","lm_head"]`
+  so the resized rows are SAVED in the adapter, but register a gradient hook that zeros the
+  grad of all pre-existing rows (existing embeddings must not drift/forget on a small dataset).
+  (2b) WARM-START the new rows from the MEAN subword embedding of each token's natural-language
+  meaning (e.g. <CUT> <- mean(embed("cut"))), NOT random init. Otherwise the TOKEN arm cold-starts
+  from noise while the PLAIN-TEXT arm reuses the pretrained semantics of "cut"/"hole" for free —
+  so a null/inverted token-vs-text result is confounded by data-efficiency/initialization, not the
+  representation it claims to test. Warm-start makes both arms start with the same word semantics.
+  (3) To make the claim FAIR, compare the dedicated-TOKEN arm against a PLAIN-TEXT arm carrying
+  the SAME signal (isolates representation, not whether the signal is present), plus a no-signal
+  baseline; an arm that masks the signal at inference (trained-with, eval-without) shows the model
+  uses it. (4) Derive the auxiliary signal from GROUND-TRUTH structure (e.g. geometry), NOT from
+  the target being generated, or the ablation is circular. (4b) The signal must be HIGH-ENTROPY
+  (varied across samples) AND not trivially inferable from the prompt prefix — else both arms
+  learn a near-constant and the token-vs-text + masked comparisons go NULL. Real failure: on
+  DeepCAD (axis-aligned rectangular prisms) trivial geometric constraints (parallel/horizontal/
+  vertical/perpendicular) fired together on ~57% of samples as one identical set → no signal to
+  represent. Fix: derive DESIGN-INTENT / construction structure (cut/join, hole, multi-part, two-
+  sided, thin/tall, ngon, ...) from GT operation+topology instead; conditioning on user-specifiable
+  design intent is the intended capability (not leakage). VERIFY the derived-tag distribution before
+  training: no single tag > ~50%, empty rate low, many distinct combinations. (5) EVAL-TIME VOCAB LOAD: a checkpoint
+  trained with added tokens has a RESIZED embed_tokens/lm_head in its adapter; before
+  `PeftModel.from_pretrained`, resize the BASE to match (add the tokens + resize) or it
+  dimension-mismatches. (6) If a downstream RL/GRPO stage does not itself need the added vocab,
+  branch it from the NORMAL-vocab checkpoint — avoids the resize/representation entanglement and
+  keeps that stage's attribution clean. (7) STRIP THE TOKEN HEADER BEFORE PARSE/EXECUTE: if the
+  dedicated tokens are NOT valid syntax in the generated target language (e.g. `<CONSTRAINTS>
+  <CUT> </CONSTRAINTS>` prepended to Python/CadQuery), the eval extractor/validator MUST remove
+  that header before compiling/running the output. Left in, it makes the whole output fail to
+  parse, so the TOKEN arm scores a FALSE ZERO while the plain-TEXT arm (a real comment, e.g.
+  `# design intent: ...`) parses fine — silently INVERTING the token-vs-text comparison into the
+  wrong conclusion. A boundary extractor that "keeps the longest compiling prefix" returns the
+  whole non-compiling string here; strip the header (split on the closing delimiter) first.
+- FREE THE TRAINING MODEL BEFORE EVAL: after training finishes and the adapter is
+  saved, `del trainer, model; gc.collect(); torch.cuda.empty_cache()` BEFORE the
+  eval load. Otherwise the training model stays resident (~12GB), the eval load
+  sees little free VRAM, and the placement logic needlessly shards eval across
+  GPUs (slower per-token generation).
+- HARDWARE PLACEMENT (multi-GPU box): keep ALL GPUs visible — do NOT set
+  CUDA_VISIBLE_DEVICES to a single id. The experiment runs every condition in ONE
+  process; hiding a GPU to make one condition single-GPU permanently blocks LATER
+  conditions from sharding (env is process-wide, fixed before torch import). Choose
+  placement PER MODEL LOAD at runtime, purely by whether the task's PEAK VRAM fits one
+  card:
+    * Estimate peak VRAM REALISTICALLY — include training activations + optimizer + any
+      reference-model copy (RL), not just weights (weight-only under-counts). THE SUBTLE TRAP:
+      this estimate must be the SINGLE-GPU requirement — the peak if the task ran on ONE card —
+      NOT the sharded per-card half you observe WHILE it is already sharded (those differ ~2×).
+      (Real GRPO at completion=768: ~16GB per card while sharded, but ~23GB on a single GPU →
+      it OOMs a 24GB card and MUST shard. A re-anchor to that 16GB per-card figure wrongly
+      picked single-GPU and OOM'd mid-step.) If unsure, measure the single-GPU peak directly
+      (force device_map={'':0}, run 1-2 steps, read torch.cuda.max_memory_allocated) — but be
+      ready for an OOM there, and treat that as "shards". Don't ship a physical guess that can
+      be off several-fold in EITHER direction.
+    * fits one device → device_map={'': 0} (single GPU — fastest: no per-step
+      cross-GPU transfer).
+    * does NOT fit → device_map='auto' (shard across all visible GPUs).
+  This decision is the SAME for training and inference (a large-batch/long-seq eval
+  that needs >24GB shards too). Print it: `PLACEMENT: single_gpu est_peak=... free=...`
+  or `PLACEMENT: sharded(auto) est_peak=... free=...`.
+  DataParallel guard (CRITICAL): a single-GPU model + a HuggingFace/TRL Trainer with
+  >1 GPU visible auto-wraps in torch.nn.DataParallel → crash "chunk expects at least a
+  1-dimensional tensor". Do NOT fix this by hiding GPUs (that blocks sharding). Instead,
+  after building the Trainer for a single-GPU model, set `trainer.args._n_gpu = 1`.
+  Sharded (device_map='auto') models are model-parallel, so Trainer skips DataParallel
+  automatically — no _n_gpu needed. Plain inference (model.generate, no Trainer) has no
+  DataParallel risk at all.
+- RL/GRPO GENERATION SPEED & MEMORY (the single biggest GRPO cost is generation):
+    * Keep gradient_checkpointing=False for the GRPO/RL trainer (set it AND
+      `model.config.use_cache = True` after building the model; rely on multi-GPU sharding
+      for the memory headroom instead). gradient_checkpointing recomputes activations in the
+      backward and run-5 measured ~7× (~950s→~130s/step) from turning it off. NB: model.generate
+      uses the KV cache by DEFAULT, so generation in isolation is ~the same with use_cache
+      True/False (measured 95 vs 96s for 4×768 tokens) — the dominant GRPO wall-clock lever is
+      actually gradient_accumulation_steps (next point), not the generation cache.
+      (Keep gradient_checkpointing=True for plain SFT, which does not generate during training.)
+    * SET gradient_accumulation_steps EXPLICITLY on the GRPO trainer — do NOT leave it
+      unset. TRL's GRPOConfig DEFAULTS IT TO 8 (not 1), and GRPO generates once PER
+      accumulation micro-step, so the unset default silently generates 8× per optimizer
+      step (~8× slower: measured 725s/step at grad_accum=8 vs ~95s/generation). Put it in
+      your HYPERPARAMETERS dict (e.g. grpo_grad_accum) so it is visible and can't be lost
+      in a regen. Pick the value as the GRPO batch knob (grad_accum × num_generations =
+      completions per update; 1×4..2×4 is a reasonable batch), not by accident.
+    * When RESUMING QLoRA training from a saved adapter (load base in 4-bit, then
+      `PeftModel.from_pretrained(base, ckpt, is_trainable=True)`), you MUST call
+      `prepare_model_for_kbit_training(base, use_gradient_checkpointing=<as above>)`
+      BEFORE attaching the adapter — same as the fresh-train path — or backward fails
+      with "element 0 of tensors does not require grad".
+    * trl/transformers Trainer subclasses (GRPOTrainer, SFTTrainer) take
+      `processing_class=tokenizer`, NOT `tokenizer=` (deprecated in transformers 4.46+;
+      passing tokenizer= raises an unexpected-keyword error on newer trl).
+    * GRPOTrainer requires trl>=0.14 (it did not exist before). Pin the trl version
+      that provides the API you call (e.g. `trl==0.14.0`) in the declared pip deps —
+      `trl>=0.11` may resolve to an installed older wheel that lacks GRPOTrainer.
+- DISABLE torch.compile (set `os.environ.setdefault("TORCHDYNAMO_DISABLE","1")` at the
+  top): for batch-1 autoregressive generation it gave no measurable speedup and
+  triggered inductor recompilation storms (16+ compile workers, multi-minute stalls).
+  Eager is predictable.
+- NO DEAD RE-INITIALIZATION: never reassign a variable to None (or re-default it)
+  AFTER you have computed its real value on the line(s) above — e.g. computing
+  `data = ds[split]` then `data = None` right before `len(data)`. This stray-clobber
+  bug recurs and crashes at runtime (len(None)); the static validator cannot catch it.
+- CACHE KEYS MUST INCLUDE EVERY VARIANT FLAG: when caching expensive artifacts
+  (features, checkpoints) that differ per ablation, put ALL distinguishing flags in the
+  cache filename (e.g. proxy_features_seed{n}_{full|hidden}.npz). If a "drop a feature"
+  ablation can reuse a superset cache, SLICE the cached array to the needed columns
+  rather than reloading a dim-mismatched file (which crashes the reward/forward with a
+  shape-mismatch).
+- REWARD DEAD-ZONE GUARD (RL only): if the reward is constant across ALL generations
+  for ~20 consecutive steps (e.g. every sample scores -1), the policy gradient is
+  zero and further steps are pure waste — print
+  `RL_DEAD_REWARD: steps=<n> reward=<r>` and stop that run early instead of burning
+  the remaining budget.
+- NO trained condition may exceed ground-truth validity. A condition scoring >=
+  ground_truth_validity (especially ==1.0 with std 0) is NOT a great result — it means
+  the oracle is being gamed (a lenient check, or mode-collapsed output clearing a
+  trivial bar). Treat it as a BUG (tighten the oracle / check output diversity), do NOT
+  report it as a finding.
+- MODE-COLLAPSE CHECK: if a condition emits near-identical output across different
+  inputs/regimes (e.g. uniform 1.0 in every regime), print
+  `WARNING: SUSPECT_OUTPUT condition=<name> reason=<...>`. Uniform perfection across
+  heterogeneous inputs is a red flag, not a success.
+
+OBSERVABILITY / INCREMENTAL PERSISTENCE (long runs are monitored from OUTSIDE the
+sandbox through files in the working directory — results that only exist in memory
+or stdout are invisible until the very end and are LOST on a crash):
+- progress.json heartbeat: throughout training/eval, atomically update a small
+  `progress.json` in the working directory (write `progress.json.tmp`, then
+  `os.replace`) at least once per epoch AND roughly every minute of training, e.g.
+  {"phase": "train", "condition": "<name>", "seed": 0, "step": 120, "total_steps": 500,
+   "latest_metric": 0.41, "updated_at": "<iso8601>"}.
+- METRIC MUST MATCH THE HYPOTHESIS AXIS: if the hypothesis is that a conditioning signal makes
+  the output MATCH a specified intent, the HEADLINE metric must measure intent-ADHERENCE (does the
+  output exhibit the conditioned features), not just task success (e.g. "is it a valid solid").
+  Those axes are orthogonal — conditioning can work perfectly (output matches intent) while the
+  success metric is unchanged, so a success-only metric reads NULL and you wrongly conclude the
+  conditioning is useless. Measure adherence = F1 of (features detected in the output) vs (intended
+  features), as PRIMARY; keep task-success as secondary.
+- CONDITION ON WHAT'S IN THE TRAINING TARGET, NOT THE NOMINAL SOURCE: derive the conditioning tags
+  from the ACTUAL target the model learns (here: the transpiled CadQuery code), not an upstream
+  nominal source (the raw JSON). A lossy transpiler/preprocessor can silently drop features (holes,
+  cuts, arcs → simplified away), so source-derived tags would condition on PHANTOMS absent from the
+  target — noise the model can't learn. Detect features from the target artifact with ONE detector,
+  and use that SAME detector for both the header and the adherence metric.
+- PAIRED arm comparison (the cheap power fix for small runs): when every arm evaluates the SAME
+  eval samples in the SAME order, compare arms PAIRED (match by sample index/seed) with a signed-
+  rank test, NOT by their per-condition means. Pairing removes between-sample difficulty variance,
+  so it is dramatically more powerful — it can resolve an effect from a handful of seeds/samples
+  that an unpaired mean-vs-mean comparison (with its wide CIs) calls noise. Log per-sample (intended
+  vs produced features + per-sample score) to a JSONL so the paired test can run offline.
+- partial_results.jsonl: the moment ONE (condition, seed) evaluation finishes,
+  append its result as one JSON line ({"condition": ..., "seed": ..., "<metric>": ...})
+  and flush. Never accumulate all results only in memory until the final write.
+- NUMPY-SAFE json.dumps (or the FINAL aggregation crashes after hours): give EVERY
+  json.dumps that writes results/progress a `default=` fallback that converts numpy
+  scalars/arrays to native (`lambda o: o.tolist() if hasattr(o,'tolist') else (o.item()
+  if hasattr(o,'item') else str(o))` — tolist FIRST, since arrays also have .item() but
+  it raises on size>1). np.float64 is a float subclass so it serializes silently, but
+  np.int64 is NOT an int subclass — a stray np.int64 value (np.sum/argmax/bincount) or
+  np.int64 dict KEY raises `TypeError: ... not JSON serializable` only at write time,
+  i.e. after the whole run. (default= covers values; if you ever key a dict by np ints,
+  stringify the keys too.)
+- NOT-MEASURED METRIC PLACEHOLDER = None, NOT 0.0: when a metric is seeded before it is
+  computed (e.g. set in an initial dict, filled in after a stage), default it to None — a 0.0
+  placeholder reads as a real measured zero if the run is budget-truncated before the metric is
+  filled in, silently misreporting "agreement/score = 0" when the truth is "not measured". Same
+  for a RATE over an EMPTY SUBGROUP: `valid / max(total, 1)` returns 0.0 when total==0, which
+  reads as "0% of that subgroup passed" when the truth is "no samples in that subgroup". Use
+  `valid/total if total>0 else None` for every stratified/subgroup rate (e.g. per-difficulty
+  validity), so an empty bucket reports None, not a fake zero. (downstream aggregation must skip None.)
+- AUTO PER-CONDITION QUALITY GATE (long multi-condition runs): after EACH condition's result is
+  recorded, automatically run a quality check and log a one-line verdict (PASS/WARN/FAIL) +
+  persist it to a flags file. Tier it: SOFT signals (validity==0/1.0, adherence NaN/out-of-range,
+  degenerate agreement, cross-arm direction reversed) only WARN+log — they're usually results not
+  bugs, auto-aborting false-kills a multi-hour run; STRUCTURAL failures (checkpoint not saved after
+  training, core metric key missing) FAIL loudly. Keep the check a pure stdlib function so it's
+  unit-tested and reused by an out-of-band status script. Don't silently let a structurally-failed
+  dependency checkpoint poison downstream conditions that reuse it.
+- EVAL/TEST LEAKAGE (a published "test" split is NOT automatically held out): dedup the
+  eval set against the FULL train set by content hash BEFORE trusting any validity number,
+  and assert the overlap is 0. Use an exact hash AND a coordinate-rounded "loose" hash (parse
+  the record, round floats to ~2dp, re-serialize sorted) to also drop float-noise near-dupes.
+  Real failure: wanhin/deepcad-completion-sft's test split shares ~30% EXACT (~40% incl.
+  coordinate-noise) duplicates with train (the dataset itself is ~63% internal dupes) — eval
+  on those silently inflates validity by memorization, indefensible at review. Filter test to
+  the train-disjoint subset (keep enough for eval_subset_size); note residual translation/
+  rotation/scale near-dups as a limitation (full geometric canonicalization is a separate, hard,
+  label-free task — not worth it vs exact+loose).
+- AUDIT SAMPLE DUMP (content-auditability — aggregate metrics alone are NOT
+  auditable): during each (condition, seed) eval, save a SMALL sample (e.g. the
+  first 10-20) of the ACTUAL model outputs with their oracle verdict to
+  `eval_samples_<condition>_seed<n>.jsonl`, one JSON line each:
+  {"prompt": <input>, "generation": <raw model output text>, "oracle_valid":
+  true/false, "regime": "simple"/"complex"}. A reviewer must be able to eyeball
+  whether generations are real domain artifacts (not degenerate text that happens
+  to clear a lenient check) and whether the oracle labeled individual samples
+  correctly — a non-zero validity_rate with garbage generations is a silent
+  failure that only per-sample dumps catch.
+- IN-TRAINING CANARY PROBE (catch training-QUALITY bugs WITHOUT waiting hours for
+  post-training eval): add a TrainerCallback that on_epoch_end generates ~5 held-out
+  prompts with the in-progress model and prints `CANARY: epoch=<n> eos_frac=<x>
+  validity=<y>` (run the SAME extractor + oracle the eval uses; temporarily set
+  use_cache=True for the probe). Decreasing loss does NOT prove the model is learning
+  the right thing — it can loop / never emit EOS / produce invalid output while loss
+  looks fine. ABORT (control.should_training_stop = True) ONLY on the real bug signature:
+  validity==0 AND eos_frac==0 after a full epoch (the model never learned to STOP) — do NOT
+  abort on validity==0 alone. A small probe (e.g. 5 samples) reads 0/5 by chance even at ~20%
+  true validity (0.8^5≈33%), so validity==0 with eos_frac>0 is just early-training noise, not a
+  bug, and aborting there falsely kills a healthy condition. Surface it rather than burning the
+  rest of a multi-hour run. This is the layer between the pre-flight smoke (can't see training
+  quality) and the final eval (too late).
+- REWARD CANARY (RL/GRPO only — the analog of the eval canary for the REWARD path): before
+  the RL trainer.train(), feed a few KNOWN-VALID ground-truth programs to the reward fn BOTH
+  the way the RL trainer will call it (prompts + completions) AND headless (completion only),
+  and print `REWARD_CANARY: gt_full_reward_mean=<x> gt_headless_reward_mean=<y>`. The reward
+  VALUE alone cannot tell a headless-extraction BUG (reward floored because the program HEAD
+  lives in the PROMPT, not the completion) from an UNDERTRAINED model (also low reward) — both
+  look like a dead reward. But a reward that IGNORES the prompt returns byte-IDENTICAL scores
+  with and without it (full == headless); a correctly-wired reward uses the prompt, so the full
+  valid program and the headless fragment score DIFFERENTLY. If full == headless on known-valid
+  programs, the reward never sees the program head → skip/abort RL instead of burning hours on a
+  dead signal. (Undertrained-but-correctly-wired rewards still differ, so this won't false-abort.)
+  When you DO bail out of RL this way, first FREE the already-loaded training model (del model +
+  torch.cuda.empty_cache()) before returning — the normal end-of-RL cleanup is downstream of the
+  bail-out point, so skipping it leaks the model's VRAM and the NEXT condition OOMs on load.
+- Key checkpoint values (e.g. the ORACLE_CALIBRATION line) must ALSO be recorded in
+  progress.json (e.g. under a "calibration" key), not only printed.
+- These files are IN ADDITION to stdout prints and the final results.json, never a
+  replacement.
+- EVERY long loop must emit progress — not just training. Eval, proxy-data
+  collection, and RL rollout loops MUST also update progress.json AND print a
+  line every ~10 items (e.g. `[eval <cond>] 10/50 valid_so_far=3`). A 50-sample
+  eval that prints nothing for an hour is an unobservable black box from outside
+  the sandbox (run-4: SFT eval ran ~75 min totally silent — the operator could
+  only guess from GPU/CPU whether it was alive or hung).
+- EXCEPTION HANDLERS MUST PRINT THE TRACEBACK: any `except` that records/handles
+  a failure must call `traceback.print_exc()` (or log exc_info), never just
+  `print(e)` / the message alone. A swallowed traceback turned a one-line
+  "chunk expects at least a 1-dimensional tensor" into a forced diagnostic rerun
+  before the real cause (DataParallel) was visible. Note tracebacks go to stderr.
+
+CHECKPOINT REUSE (CRITICAL — a silent path mismatch retrains for hours and starves
+later conditions out of the time budget):
+- When one condition reuses another condition's trained checkpoint (e.g. RL/GRPO
+  starting from an SFT model), the save path and the load path MUST come from the
+  SAME single helper function or module-level constant (e.g.
+  `def sft_ckpt_dir(seed): ...`) — never two hand-written string literals.
+- At the start of every condition/seed, print exactly ONE of:
+  `CHECKPOINT_REUSE: condition=<name> seed=<n> path=<path>` or
+  `CHECKPOINT_RETRAIN: condition=<name> seed=<n> reason=<why>` (and record it in
+  progress.json). If the experiment plan says the condition builds on a previous
+  checkpoint, an unexpected RETRAIN is a BUG — fail loudly rather than silently
+  retraining.
+- CONVERSELY, DISTINCT conditions/ablations MUST write to DISTINCT checkpoint paths —
+  parametrize the save path by the ABLATION VARIANT, not just the seed. If two variants
+  (e.g. a full-feature vs a hidden-only reward) share one path, the second silently REUSES
+  the first's checkpoint (no RETRAIN, no error) and collapses into a DUPLICATE of the first
+  — the ablation measures nothing. A trained-but-unused per-variant path helper is a red flag.
+
+TIME-BUDGET GRACEFUL DEGRADATION (CRITICAL — a hard crash at the budget boundary
+loses EVERY result computed before it):
+- When the time guard fires mid-condition (e.g. data collection or training got
+  only a partial batch), the condition must SKIP gracefully: print
+  `CONDITION_SKIPPED: condition=<name> seed=<n> reason=time_budget`, record the
+  skip in results, and move on to writing final outputs. NEVER let a partial
+  state reach a bare `raise` (e.g. "too few samples" validation errors) — wrap
+  budget-truncation paths so the run still ends with a complete results.json
+  covering everything that DID finish.
+- Long inner training loops (e.g. a HuggingFace Trainer call that runs for
+  hours) MUST also respect the time budget — add a step/epoch callback that
+  checks remaining time, or cap max_steps from the remaining budget BEFORE
+  starting. Checking the budget only between conditions is NOT enough: one
+  unguarded multi-hour call can blow straight through the stop line.
+- STEPS ARE OPTIMIZER STEPS, NOT FORWARD PASSES: when you set HF Trainer
+  `max_steps` (or compute it for N epochs), count OPTIMIZER steps, which already
+  divide by gradient_accumulation_steps. One optimizer step processes
+  per_device_train_batch_size × gradient_accumulation_steps × n_gpu samples. So
+  `steps_per_epoch = ceil(num_samples / (batch × grad_accum × n_gpu))` and
+  `max_steps = epochs × steps_per_epoch`. Here n_gpu is the DATA-PARALLEL world size,
+  which is 1 in this setup (single-GPU training pins trainer._n_gpu=1; sharded
+  device_map='auto' is MODEL-parallel, not data-parallel) — do NOT plug in
+  torch.cuda.device_count() (both GPUs visible) or you halve the step count and
+  under-train. Do NOT use num_samples/batch (ignoring grad_accum) — that over-counts
+  steps by the grad_accum factor and silently
+  trains for grad_accum× too many epochs (run-4: a "3-epoch" SFT ran 24 epochs,
+  4h instead of ~30min, and over-fit). Also: max_steps OVERRIDES num_train_epochs
+  in HF Trainer, so if you pass both, the epoch count you intend must already be
+  baked into max_steps by the formula above.
+- RUNTIME ETA CALIBRATION: planned step counts (RL steps, eval set sizes,
+  collection sample counts) are guesses until measured on THIS hardware. After
+  the first few steps/samples of each long loop, measure the per-step time,
+  print `ETA_CALIBRATION: phase=<name> sec_per_step=<s> projected_total=<s>`,
+  and if the projection exceeds that phase's share of the remaining budget,
+  SCALE DOWN the step/sample count proportionally (and print the new count)
+  rather than running blind into the stop line.
+- Write/refresh results.json incrementally (after EVERY condition completes),
+  so even a hard kill preserves all finished conditions.
+
 Your task:
 1. Design the file structure (main.py is the required entry point).
 2. Implement ALL files with complete, runnable code. No placeholders or TODOs.
 3. main.py must be the entry point and print the primary metric as:
    {metric}: <value>
 4. Include numerical stability guards (gradient clipping, NaN detection, etc.).
-5. Use multi-seed evaluation (seeds 0, 1, 2) and report mean ± std.
+5. Use the EXACT seed count from the experiment plan's compute_budget (each condition's
+   `seeds:` field) — do NOT default to 3 seeds. If the plan says 2 seeds, use seeds [0, 1];
+   if 1, use [0]. Report mean ± std over exactly those seeds.
 6. Each ablation/condition MUST be genuinely different — not copy-paste with a renamed variable.
 7. Implement a time guard: stop gracefully at 80% of the time budget ({time_budget_sec} seconds).
-8. Write requirements.txt listing any extra pip packages needed.
-9. If the experiment needs dataset downloads, write a setup.py that handles them.
+   But DO NOT UNDER-TRAIN to save budget: a model trained too few epochs never learns to
+   emit EOS and never converges, so it rambles to the token cap on every sample
+   (eos_frac≈0) and scores ~0 validity — wasting the whole run. Use enough epochs to
+   converge (>=3 is typical for SFT at these sizes), and follow any epoch count the plan
+   specifies. If budget is tight, cut eval/collection SAMPLE COUNTS or drop a CONDITION,
+   never shave training epochs below convergence.
+8. Write requirements.txt listing ONLY the top-level packages your code directly imports
+   (e.g. cadquery, transformers, trl, peft). Do NOT pin or declare transitive dependencies
+   that a top-level package installs automatically (e.g. do NOT add OCP / OCP.Core for
+   cadquery, or nvidia-* CUDA wheels for torch) — guessing their version numbers (e.g.
+   `OCP>=7.7`) breaks `pip install` because that version does not exist on PyPI. List only
+   what you `import` directly, at conservative minimum versions.
+9. If the experiment needs dataset downloads, write a setup.py that downloads
+   the REAL declared dataset (no synthetic fallback).
 
 IMPORTANT CONSTRAINTS:
-- The code will run in an isolated Docker container with PyTorch, torchvision, and common ML packages pre-installed.
+- The code will run in the experiment environment configured in the project config: {env_description}
 - Do NOT use argparse or CLI arguments — hardcode all configuration.
-- All output must go to stdout (print statements).
+- All metric/log output must go to stdout (print statements), in addition to the
+  observability files (progress.json / partial_results.jsonl / results.json).
 - Keep the experiment feasible within {time_budget_sec} seconds total.
+- SMOKE-TEST HOOK: at the very top of main(), check `if os.environ.get("ARC_SMOKE"):`
+  and shrink EVERY cost knob to the minimum that still exercises each code path —
+  all conditions but seeds=[0] only, train steps/epochs → 1, eval/proxy/collection
+  sample counts → 2, RL steps → 1, dataset subset → a few rows, AND generation length
+  (max_completion_length / eval max_new_tokens) → small (e.g. 64) — generation is the
+  dominant cost, so a full-length cap makes the smoke needlessly slow. The goal: run
+  ALL conditions end-to-end (train 1 step, eval 2 samples, GRPO 1 step, oracle) in 1-2
+  minutes so a pre-flight catches runtime crashes (import errors, NoneType, shape
+  mismatches, Trainer misconfig) before the multi-hour real run. ARC_SMOKE must
+  still touch every condition and the real tools/oracle — it only shrinks sizes.
 """
+
+
+def _render_mega_prompt(
+    metric: str, time_budget_sec: int, env_description: str
+) -> str:
+    """Render the beast-mode prompt.
+
+    Uses ``str.replace`` (not ``.format``) so a metric containing curly braces
+    like ``F{1}`` does not raise KeyError.
+    """
+    return (
+        _MEGA_PROMPT_TEMPLATE
+        .replace("{metric}", metric)
+        .replace("{time_budget_sec}", str(time_budget_sec))
+        .replace("{env_description}", env_description)
+    )
 
 
 class OpenCodeBridge:
@@ -382,6 +878,23 @@ class OpenCodeBridge:
             or "azure" in (self._llm_provider or "").lower()
         )
 
+    def _is_openrouter(self) -> bool:
+        """Detect OpenRouter from base URL or provider string.
+
+        OpenRouter must NOT be routed through opencode's "openai" provider:
+        that provider speaks the OpenAI *Responses API* (``/responses``), and
+        while OpenRouter accepts trivial single-turn Responses requests, its
+        implementation rejects the multi-turn agentic payloads opencode emits
+        (tool results / reasoning items) with ``Invalid Responses API request``
+        — so beast mode writes zero files. opencode ships a *native* openrouter
+        provider (chat/completions) that handles the full agentic loop, so we
+        target that instead.
+        """
+        return (
+            "openrouter" in (self._llm_provider or "").lower()
+            or "openrouter" in (self._llm_base_url or "").lower()
+        )
+
     def _build_opencode_config(self) -> dict[str, Any]:
         """Build the opencode.json configuration.
 
@@ -393,12 +906,32 @@ class OpenCodeBridge:
             "$schema": "https://opencode.ai/config.json",
         }
 
-        if self._llm_base_url:
+        if self._is_openrouter():
+            # Native openrouter provider (chat/completions). Keep the full
+            # vendor-prefixed model id — the native provider knows OpenRouter's
+            # model catalog, so no per-model registration is needed.
             if self._model:
-                cfg["model"] = (
-                    self._model if "/" in self._model
-                    else f"openai/{self._model}"
-                )
+                cfg["model"] = f"openrouter/{self._model}"
+            cfg["provider"] = {
+                "openrouter": {
+                    "options": {
+                        "apiKey": f"{{env:{self._api_key_env}}}"
+                        if self._api_key_env
+                        else "",
+                    },
+                }
+            }
+            return cfg
+
+        if self._llm_base_url:
+            # The model is always registered under the "openai" provider keyed
+            # by its basename (vendor prefixes like "anthropic/" are an upstream
+            # routing convention, not an opencode provider). cfg["model"] must
+            # therefore reference "openai/<basename>" — passing the raw vendor
+            # prefix sends opencode to its built-in provider (needs that
+            # vendor's own API key) and the call hangs/fails.
+            if self._model:
+                cfg["model"] = f"openai/{self._model.split('/')[-1]}"
             cfg["provider"] = {
                 "openai": {
                     "options": {
@@ -436,15 +969,24 @@ class OpenCodeBridge:
         """Resolve the model identifier for OpenCode CLI's ``-m`` flag.
 
         Resolution order:
-        1. If model already contains "/" (e.g. "anthropic/claude-sonnet-4-6") → use as-is
-        2. Otherwise → "openai/{model}" (works for both Azure and standard OpenAI)
-
-        Note: Azure AI Services now supports the Responses API with Bearer
-        token auth via the OpenAI-compatible endpoint, so we use the "openai"
-        provider universally — no Anthropic fallback needed.
+        1. No model → default "anthropic/claude-sonnet-4-6".
+        2. OpenRouter → native "openrouter/<full-id>" provider (the openai
+           Responses-API provider breaks on multi-turn agentic requests; see
+           _is_openrouter). Keep the vendor prefix — OpenRouter needs the full
+           "anthropic/claude-sonnet-4.6" model id.
+        3. Other custom OpenAI-compatible endpoint (Azure/standard OpenAI) →
+           the model is registered under the "openai" provider keyed by
+           basename, so strip any vendor prefix and return "openai/<basename>"
+           to match _build_opencode_config().
+        4. No custom endpoint → honor an explicit provider prefix as-is (lets
+           users target opencode's built-in providers), else "openai/{model}".
         """
         if not self._model:
             return "anthropic/claude-sonnet-4-6"
+        if self._is_openrouter():
+            return f"openrouter/{self._model}"
+        if self._llm_base_url:
+            return f"openai/{self._model.split('/')[-1]}"
         if "/" in self._model:
             return self._model
         return f"openai/{self._model}"
@@ -458,14 +1000,17 @@ class OpenCodeBridge:
     ) -> tuple[bool, str, float]:
         """Run ``opencode run`` in the workspace. Returns (success, log, elapsed)."""
         env = os.environ.copy()
-        # Pass API key via environment if configured
+        # Pass API key via environment if configured. The env var name must
+        # match the provider opencode resolves the model under: the native
+        # openrouter provider reads OPENROUTER_API_KEY; the openai provider
+        # (standard OpenAI / Azure via Bearer auth) reads OPENAI_API_KEY.
         if self._api_key_env:
             api_key = os.environ.get(self._api_key_env, "")
             if api_key:
-                # We always use the "openai" provider for OpenCode now,
-                # which reads OPENAI_API_KEY (works for Azure too via
-                # Bearer token auth on the OpenAI-compatible endpoint).
-                env["OPENAI_API_KEY"] = api_key
+                if self._is_openrouter():
+                    env["OPENROUTER_API_KEY"] = api_key
+                else:
+                    env["OPENAI_API_KEY"] = api_key
 
         # Use -m flag to specify model (more reliable than opencode.json)
         resolved_model = self._resolve_opencode_model()
@@ -645,11 +1190,23 @@ class OpenCodeBridge:
         pkg_hint: str = "",
         extra_guidance: str = "",
         time_budget_sec: int = 300,
+        env_description: str = "",
     ) -> OpenCodeResult:
         """Run OpenCode to generate experiment code.
 
+        ``env_description`` describes the configured experiment environment the
+        generated code will actually run in (mode, package availability, network
+        policy). It is injected into the mega-prompt so the model targets the
+        real environment instead of a hardcoded assumption.
+
         Returns an OpenCodeResult with success status and generated files.
         """
+        if not env_description:
+            env_description = (
+                "the configured experiment environment — use only the packages "
+                "listed in GUIDANCE.md; do not assume internet access or pip "
+                "installs are available at runtime."
+            )
         # Check availability first
         if not self.check_available():
             return OpenCodeResult(
@@ -677,13 +1234,8 @@ class OpenCodeBridge:
                 logger.warning("Beast mode: %s", last_error)
                 continue
 
-            # Build the mega-prompt (use replace instead of .format() to
-            # avoid KeyError when metric contains curly braces like "F{1}")
-            prompt = _MEGA_PROMPT_TEMPLATE.replace(
-                "{metric}", metric
-            ).replace(
-                "{time_budget_sec}", str(time_budget_sec)
-            )
+            # Build the mega-prompt
+            prompt = _render_mega_prompt(metric, time_budget_sec, env_description)
 
             logger.info(
                 "Beast mode: invoking OpenCode (attempt %d/%d, timeout=%ds)",

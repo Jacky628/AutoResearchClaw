@@ -63,3 +63,65 @@ def create_llm_client(config: RCConfig) -> LLMClient | ACPClient:
 
     # Use from_rc_config to properly initialize adapters (e.g., Anthropic)
     return _LLM.from_rc_config(config)
+
+
+def build_reviewer_llm(config: RCConfig):
+    """Build an independent reviewer/judge LLM client (P0-3) or None.
+
+    Returns None when ``llm.reviewer_model`` is empty so callers fall back to
+    the generator client (backward-compatible). ACP-provider runs do not get a
+    separate reviewer (None) — reviewing reuses the generator agent.
+    """
+    if getattr(config.llm, "provider", "") == "acp":
+        return None
+    from researchclaw.llm.client import LLMClient as _LLM
+
+    try:
+        return _LLM.reviewer_from_rc_config(config)
+    except Exception:  # noqa: BLE001 - never block the pipeline on reviewer setup
+        return None
+
+
+def build_panel_llms(config: RCConfig) -> list:
+    """Build the multi-model debate panel (Stage 8/14/18) or [] when disabled.
+
+    Opt-in via ``llm.debate_enabled``. The panel reuses existing models —
+    ``primary_model`` + ``reviewer_model`` (if set) + ``fallback_models`` —
+    deduplicated by model name, each cloned into its own single-model client
+    (no fallback chain) so each debate role can be bound to a distinct model.
+    Returns [] for ACP runs, when debate is disabled, or on any error.
+    """
+    import dataclasses
+
+    if getattr(config.llm, "provider", "") == "acp":
+        return []
+    if not getattr(config.llm, "debate_enabled", False):
+        return []
+    from researchclaw.llm.client import LLMClient as _LLM
+
+    try:
+        base = _LLM.from_rc_config(config)
+        names: list[str] = []
+        seen: set[str] = set()
+        for m in (
+            config.llm.primary_model,
+            getattr(config.llm, "reviewer_model", "") or "",
+            *(config.llm.fallback_models or ()),
+        ):
+            m = (m or "").strip()
+            if m and m not in seen:
+                seen.add(m)
+                names.append(m)
+        clients = []
+        for name in names:
+            cfg = dataclasses.replace(
+                base.config, primary_model=name, fallback_models=[]
+            )
+            client = _LLM(cfg)
+            # Preserve the Anthropic/Kimi adapter from the base client (panel
+            # members share the base endpoint).
+            client._anthropic = base._anthropic
+            clients.append(client)
+        return clients
+    except Exception:  # noqa: BLE001 - never block the pipeline on panel setup
+        return []

@@ -356,7 +356,10 @@ def _ensure_sandbox_deps(code: str, python_path: str) -> list[str]:
         try:
             r = _sp.run(
                 [str(py_path), "-c", f"import {pkg}"],
-                capture_output=True, timeout=10,
+                # torch's first import on WSL2/cold cache routinely exceeds 10s;
+                # a timeout here raises TimeoutExpired, which is swallowed below
+                # and silently skips the dependency check for that package.
+                capture_output=True, timeout=60,
                 encoding="utf-8", errors="replace",
             )
             if r.returncode != 0:
@@ -586,7 +589,7 @@ def _extract_code_block(content: str) -> str:
     return content.strip()
 
 
-def _extract_multi_file_blocks(content: str) -> dict[str, str]:
+def _extract_multi_file_blocks(content: str, *, assume_main: bool = True) -> dict[str, str]:
     """Parse LLM response containing multiple files with filename markers.
 
     Expected format::
@@ -607,8 +610,13 @@ def _extract_multi_file_blocks(content: str) -> dict[str, str]:
     - ``filename:main.py`` on next line after backticks
     - ``# FILE: main.py`` comment markers inside code blocks
 
-    Falls back to treating the entire code block as ``main.py`` if no
-    ``filename:`` markers are found.
+    ``assume_main`` controls the entry-point coercion meant for FULL-generation
+    callers (no ``main.py`` in the result → rename the first file to
+    ``main.py``; no filename markers at all → treat the bare code block as
+    ``main.py``). Partial-REPAIR callers MUST pass ``assume_main=False``: a
+    repair response touching only e.g. ``proxy_reward.py`` must come back under
+    its own name — coercing it to ``main.py`` silently replaces the real entry
+    point with a non-entry module (run-4 Stage 10 incident).
 
     Returns a dict mapping filename → code content.
     """
@@ -654,17 +662,18 @@ def _extract_multi_file_blocks(content: str) -> dict[str, str]:
             if fname and fname.endswith(".py"):
                 files[fname] = code.strip()
         if files:
-            # Ensure there is a main.py entry point
-            if "main.py" not in files:
+            # Ensure there is a main.py entry point (full-generation mode only)
+            if "main.py" not in files and assume_main:
                 # Pick the first file as main.py
                 first_key = next(iter(files))
                 files["main.py"] = files.pop(first_key)
             return files
 
-    # Fallback: single code block → main.py
-    code = _extract_code_block(content)
-    if code.strip():
-        return {"main.py": code}
+    # Fallback: single unlabeled code block → main.py (full-generation mode only)
+    if assume_main:
+        code = _extract_code_block(content)
+        if code.strip():
+            return {"main.py": code}
     return {}
 
 

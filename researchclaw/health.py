@@ -161,6 +161,39 @@ def _is_timeout(exc: BaseException) -> bool:
     return isinstance(reason, (TimeoutError, socket.timeout))
 
 
+def _is_connection_reset(exc: BaseException) -> bool:
+    if isinstance(exc, ConnectionResetError):
+        return True
+    reason = getattr(exc, "reason", None)
+    return isinstance(reason, ConnectionResetError)
+
+
+def _get_probe(probe_urls: list[str], headers: dict[str, str]) -> CheckResult | None:
+    """Try a GET request against candidate URLs; return a passing CheckResult
+    if any endpoint is demonstrably reachable, else None."""
+    for probe in probe_urls:
+        try:
+            get_req = urllib.request.Request(probe, headers=headers)
+            with urllib.request.urlopen(get_req, timeout=5):
+                return CheckResult(
+                    name="llm_connectivity",
+                    status="pass",
+                    detail=f"Reachable: {probe}",
+                )
+        except urllib.error.HTTPError as get_exc:
+            # 401/422/405 = endpoint exists but needs auth/body — still reachable
+            if get_exc.code in (401, 405, 415, 422):
+                return CheckResult(
+                    name="llm_connectivity",
+                    status="pass",
+                    detail=f"Reachable (HTTP {get_exc.code}): {probe}",
+                )
+            continue
+        except urllib.error.URLError:
+            continue
+    return None
+
+
 def check_llm_connectivity(base_url: str, api_key: str = "") -> CheckResult:
     if not base_url.strip():
         return CheckResult(
@@ -171,6 +204,7 @@ def check_llm_connectivity(base_url: str, api_key: str = "") -> CheckResult:
         )
 
     url = _models_url(base_url)
+    fallback_url = f"{base_url.rstrip('/')}/chat/completions"
     headers: dict[str, str] = {}
     if api_key.strip():
         headers["Authorization"] = f"Bearer {api_key}"
@@ -187,28 +221,10 @@ def check_llm_connectivity(base_url: str, api_key: str = "") -> CheckResult:
         if exc.code in (404, 405):
             # /models not available (e.g. MiniMax, some proxies) — try
             # /chat/completions with HEAD/GET as a fallback probe.
-            fallback_url = f"{base_url.rstrip('/')}/chat/completions"
             probe_urls = [url, fallback_url] if exc.code == 405 else [fallback_url]
-            for probe in probe_urls:
-                try:
-                    get_req = urllib.request.Request(probe, headers=headers)
-                    with urllib.request.urlopen(get_req, timeout=5):
-                        return CheckResult(
-                            name="llm_connectivity",
-                            status="pass",
-                            detail=f"Reachable: {probe}",
-                        )
-                except urllib.error.HTTPError as get_exc:
-                    # 401/422/405 = endpoint exists but needs auth/body — still reachable
-                    if get_exc.code in (401, 405, 415, 422):
-                        return CheckResult(
-                            name="llm_connectivity",
-                            status="pass",
-                            detail=f"Reachable (HTTP {get_exc.code}): {probe}",
-                        )
-                    continue
-                except urllib.error.URLError:
-                    continue
+            probed = _get_probe(probe_urls, headers)
+            if probed is not None:
+                return probed
             return CheckResult(
                 name="llm_connectivity",
                 status="fail",
@@ -230,6 +246,12 @@ def check_llm_connectivity(base_url: str, api_key: str = "") -> CheckResult:
                 detail="LLM endpoint unreachable",
                 fix="Verify endpoint URL and network connectivity",
             )
+        # Some proxies/gateways reject HEAD by resetting the TCP connection
+        # instead of returning 405. Fall back to a GET probe before failing.
+        if _is_connection_reset(exc):
+            probed = _get_probe([url, fallback_url], headers)
+            if probed is not None:
+                return probed
         return CheckResult(
             name="llm_connectivity",
             status="fail",

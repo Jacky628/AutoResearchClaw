@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 
 import pytest
@@ -36,6 +37,13 @@ from researchclaw.templates.converter import (
     _reset_render_counters,
     _next_table_num,
     _next_figure_num,
+    _resolve_markdown_footnotes,
+    _FN_OPEN,
+    _FN_CLOSE,
+    _visual_len,
+    _cell_breakable,
+    _longest_unbreakable,
+    TABLE_FONT,
     check_paper_completeness,  # noqa: F401
 )
 
@@ -745,3 +753,239 @@ class TestAlgorithmEscaping:
         result = _render_code_block("python", code)
         assert r"\begin{verbatim}" in result
         assert "x_1" in result  # NOT escaped in verbatim
+
+
+# =====================================================================
+# Markdown footnotes
+# =====================================================================
+
+
+_FN_SPAN_RE = re.compile(
+    re.escape(_FN_OPEN) + r".*?" + re.escape(_FN_CLOSE), re.DOTALL
+)
+
+
+def _outside_footnotes(text: str) -> str:
+    """The document with every inlined footnote body removed.
+
+    Assertions go through this rather than testing the whole string: under the
+    old DOTALL body capture the swallowed block was still *present*, just
+    buried inside the footnote, so a plain ``in`` check passed on a corrupted
+    document.
+    """
+    return _FN_SPAN_RE.sub("", text)
+
+
+class TestMarkdownFootnotes:
+    """Tests for _resolve_markdown_footnotes() and its LaTeX output.
+
+    The definition-swallowing cases below are the reason this feature is
+    tested at all: with a DOTALL body capture, a definition that is not
+    followed by a blank line absorbs the next block of the paper into the
+    footnote and deletes it from the body, and nothing downstream errors.
+    """
+
+    def test_reference_becomes_footnote(self) -> None:
+        tex = markdown_to_latex(
+            "## Method\n\nA claim.[^a]\n\n[^a]: The note body.\n",
+            NEURIPS_2025,
+            title="T",
+        )
+        assert r"\footnote{The note body.}" in tex
+        assert "[^a]" not in tex
+        assert "XFOOTNOTE" not in tex
+
+    def test_definition_followed_by_heading_keeps_the_heading(self) -> None:
+        out = _resolve_markdown_footnotes(
+            "A claim.[^1]\n\n[^1]: See Appendix A.\n## Results\n\nBody.\n"
+        )
+        assert "## Results" in _outside_footnotes(out)
+        assert "Body." in _outside_footnotes(out)
+        assert f"{_FN_OPEN}See Appendix A.{_FN_CLOSE}" in out
+
+    def test_definition_followed_by_prose_keeps_the_prose(self) -> None:
+        out = _resolve_markdown_footnotes(
+            "A claim.[^1]\n[^1]: See Appendix A.\nThe sentence carrying the claim.\n"
+        )
+        assert "The sentence carrying the claim." in _outside_footnotes(out)
+        assert f"{_FN_OPEN}See Appendix A.{_FN_CLOSE}" in out
+
+    @pytest.mark.parametrize(
+        "trailer,survivor",
+        [
+            ("- item one\n- item two\n", "- item one"),
+            ("| A | B |\n|---|---|\n| 1 | 2 |\n", "| A | B |"),
+            ("```python\nx = 1\n```\n", "x = 1"),
+        ],
+    )
+    def test_definition_followed_by_block_keeps_the_block(
+        self, trailer: str, survivor: str
+    ) -> None:
+        out = _resolve_markdown_footnotes(f"A claim.[^a]\n[^a]: Note.\n{trailer}")
+        assert survivor in _outside_footnotes(out)
+        assert f"{_FN_OPEN}Note.{_FN_CLOSE}" in out
+
+    def test_crlf_input_does_not_swallow_the_document(self) -> None:
+        out = _resolve_markdown_footnotes(
+            "A claim.[^a].\r\n\r\n[^a]: Note.\r\n\r\nThe next paragraph.\r\n"
+        )
+        assert "The next paragraph." in _outside_footnotes(out)
+        assert f"{_FN_OPEN}Note.{_FN_CLOSE}" in out
+
+    def test_indented_continuation_joins_the_body(self) -> None:
+        out = _resolve_markdown_footnotes(
+            "A claim.[^a]\n\n[^a]: First line\n    continued here.\n\nNext.\n"
+        )
+        assert f"{_FN_OPEN}First line continued here.{_FN_CLOSE}" in out
+        assert "Next." in _outside_footnotes(out)
+
+    @pytest.mark.parametrize(
+        "markdown",
+        [
+            "## Method[^a]\n\nBody.\n\n[^a]: Note.\n",
+            "## R\n\n| Model[^a] | Acc |\n|---|---|\n| M | 0.9 |\n\n[^a]: Note.\n",
+            "## R\n\n![A caption[^a]](figures/f)\n\nBody.\n\n[^a]: Note.\n",
+        ],
+    )
+    def test_unsafe_positions_emit_no_footnote(self, markdown: str) -> None:
+        """LaTeX takes no \\footnote in a heading, a table cell or a caption.
+
+        The old behaviour put one there anyway: inside \\caption{} that is a
+        fatal pdflatex error, and inside \\section{} it tears the heading apart
+        and corrupts the \\label slug derived from it.
+        """
+        tex = markdown_to_latex(markdown, NEURIPS_2025, title="T")
+        assert r"\footnote" not in tex
+        assert "XFOOTNOTE" not in tex
+        assert not re.search(r"\\label\{[^}]*footnote", tex, re.IGNORECASE)
+
+    def test_reference_inside_a_fenced_code_block_is_untouched(self) -> None:
+        tex = markdown_to_latex(
+            '## M\n\n```python\np = re.compile(r"[^a]")\n```\n\nA claim.[^a]\n\n[^a]: A note.\n',
+            NEURIPS_2025,
+            title="T",
+        )
+        assert r"\footnote{A note.}" in tex
+        assert "[^a]" in tex  # the regex character class survives verbatim
+
+    def test_body_ending_in_a_backslash_does_not_run_away(self) -> None:
+        tex = markdown_to_latex(
+            "A claim.[^a]\n\n[^a]: Body ending in a backslash \\\n",
+            NEURIPS_2025,
+            title="T",
+        )
+        body = tex.split(r"\footnote{", 1)[1]
+        assert not body.startswith("}")
+        assert r"\}" not in body[:80]
+
+    def test_undefined_reference_is_left_as_written(self) -> None:
+        out = _resolve_markdown_footnotes("Dangling[^zzz] ref.\n\n[^a]: unrelated.\n")
+        assert "[^zzz]" in out
+
+    def test_unreferenced_definition_is_kept(self) -> None:
+        """Standard Markdown drops it; losing author text silently is worse."""
+        out = _resolve_markdown_footnotes("Plain text.\n\n[^orphan]: Nobody points here.\n")
+        assert "Nobody points here." in _outside_footnotes(out)
+        assert _FN_OPEN not in out
+
+    def test_document_without_footnotes_is_unchanged(self) -> None:
+        markdown = "## M\n\nJust [cite2020key] and *text*.\n"
+        assert _resolve_markdown_footnotes(markdown) == markdown
+
+
+class TestHeadingNumberStripping:
+    """LaTeX numbers headings itself, so a number left in the title text prints twice."""
+
+    @pytest.mark.parametrize(
+        "heading,expected",
+        [
+            ("1. Introduction", "Introduction"),
+            ("2.1 Related Work", "Related Work"),
+            ("3.2.1 Details", "Details"),
+            # appendix subsections carry a letter-prefixed number; leaving it in the
+            # title produced "A.8  A.8 What the released hash manifest covers"
+            ("A.8 What the released hash manifest covers", "What the released hash manifest covers"),
+            ("B.10.2 Deep nesting", "Deep nesting"),
+        ],
+    )
+    def test_manual_number_is_stripped(self, heading: str, expected: str) -> None:
+        tex = markdown_to_latex(f"## {heading}\n\nBody.\n", NEURIPS_2025, title="T")
+        assert f"\\section{{{expected}}}" in tex
+
+    @pytest.mark.parametrize(
+        "heading",
+        ["A Study of Conditioning", "B. Results", "Introduction", "4-tag recall"],
+    )
+    def test_non_numbers_are_left_alone(self, heading: str) -> None:
+        """A bare letter or a leading digit that is part of the words must survive."""
+        tex = markdown_to_latex(f"## {heading}\n\nBody.\n", NEURIPS_2025, title="T")
+        assert f"\\section{{{heading}}}" in tex
+
+
+class TestTableTypography:
+    """Every table in a document must be set at the same size.
+
+    The previous behaviour wrapped wide tables in ``\\resizebox{\\columnwidth}{!}``,
+    which scales a table to *exactly* the text width. The scale factor is then
+    columnwidth/natural-width and differs per table: across one paper's fifteen
+    tables the effective body size ran from 5.8pt to 10.8pt, narrow tables
+    magnified above the surrounding prose and wide ones shrunk below legibility.
+    """
+
+    NARROW = "## R\n\n| A | B |\n|---|---:|\n| x | 1 |\n"
+    WIDE_TEXT = (
+        "## R\n\n| Method | Description of the approach, at some length | Acc |\n"
+        "|---|---|---:|\n| M | a long explanatory sentence that would stretch it | 0.9 |\n"
+    )
+    MANY_NUMERIC = (
+        "## R\n\n| Profile | a | b | c | d | e | f | g |\n"
+        "|---|---:|---:|---:|---:|---:|---:|---:|\n"
+        "| CIRCLE | 0.111 | 0.222 | 0.333 | 0.444 | 0.555 | 0.666 | 0.777 |\n"
+    )
+
+    @pytest.mark.parametrize("name", ["NARROW", "WIDE_TEXT", "MANY_NUMERIC"])
+    def test_every_table_carries_the_same_size(self, name: str) -> None:
+        tex = markdown_to_latex(getattr(self, name), NEURIPS_2025, title="T")
+        assert TABLE_FONT in tex
+
+    @pytest.mark.parametrize("name", ["NARROW", "WIDE_TEXT", "MANY_NUMERIC"])
+    def test_scale_to_fill_is_never_used(self, name: str) -> None:
+        """\\resizebox{\\columnwidth}{!} magnifies a narrow table; max width does not."""
+        tex = markdown_to_latex(getattr(self, name), NEURIPS_2025, title="T")
+        assert r"\resizebox{\columnwidth}{!}" not in tex
+
+    def test_long_text_column_wraps_instead_of_stretching(self) -> None:
+        tex = markdown_to_latex(self.WIDE_TEXT, NEURIPS_2025, title="T")
+        assert r"\begin{tabularx}{\columnwidth}" in tex
+        assert "X" in re.search(r"\\begin\{tabularx\}\{\\columnwidth\}\{([^}]*)\}", tex).group(1)
+
+    def test_narrow_table_is_left_alone(self) -> None:
+        tex = markdown_to_latex(self.NARROW, NEURIPS_2025, title="T")
+        block = re.search(r"\\begin\{table\}.*?\\end\{table\}", tex, re.S).group(0)
+        assert r"\begin{tabular}{lr}" in block
+        # checked on the float, not the document: the preamble loads tabularx
+        assert "adjustbox" not in block
+        assert "tabularx" not in block
+
+    def test_uncompressible_table_is_shrunk_not_magnified(self) -> None:
+        """Numbers cannot wrap, so a table of them is scaled down — but only down."""
+        tex = markdown_to_latex(self.MANY_NUMERIC, NEURIPS_2025, title="T")
+        assert r"\adjustbox{max width=\columnwidth}" in tex
+
+    def test_visual_len_counts_glyphs_not_markup(self) -> None:
+        """Sizing columns by source length made maths look far too wide to wrap."""
+        assert _visual_len(r"$5.9\times10^{-7}$") < len(r"$5.9\times10^{-7}$")
+        assert _visual_len("CIRCLE+NGON+THIN") == len("CIRCLE+NGON+THIN")
+
+    def test_compound_labels_become_breakable(self) -> None:
+        assert r"\discretionary{}{}{}" in _cell_breakable("CIRCLE+NGON+THIN")
+
+    @pytest.mark.parametrize("cell", ["TALL", r"$5.9\times10^{-7}$", "short words here"])
+    def test_cells_that_need_no_break_are_untouched(self, cell: str) -> None:
+        assert _cell_breakable(cell) == cell
+
+    def test_maths_is_measured_as_one_unbreakable_run(self) -> None:
+        """A cell of maths cannot break, so the column is sized by its longest atom."""
+        cell = r"$5.9\times10^{-7}$ / $8.5\times10^{-15}$"
+        assert _longest_unbreakable([cell]) == _visual_len(r"$8.5\times10^{-15}$")
+        assert _longest_unbreakable([cell]) < _visual_len(cell)

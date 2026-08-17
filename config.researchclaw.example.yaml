@@ -44,6 +44,52 @@ llm:
   fallback_models:
     - "gpt-4.1"
     - "gpt-4o-mini"
+  # --- Independent reviewer/judge model (P0-3: break review same-source) ---
+  # Leave reviewer_model empty (default) to review/judge with the generator
+  # model (legacy behaviour). Set reviewer_model alone to judge with a
+  # different model on the SAME endpoint, or set the reviewer_* provider fields
+  # below for a fully independent provider (e.g. generator=GPT, reviewer=Claude).
+  # Used by Stage 18 (peer review) and Stage 20 (quality gate); the author model
+  # still does generation and revision.
+  reviewer_model: ""          # e.g. "claude-sonnet-4-6" — empty disables
+  reviewer_provider: ""       # e.g. "anthropic" — defaults to provider above
+  reviewer_base_url: ""       # defaults to base_url above
+  reviewer_api_key_env: ""    # e.g. "ANTHROPIC_API_KEY" — defaults to api_key_env
+  reviewer_api_key: ""        # inline key (optional; prefer the env var)
+  # Reasoning effort for OpenAI reasoning models (o-series / gpt-5.x) via
+  # OpenAI/OpenRouter — e.g. a gpt-5.x reviewer_model/judge. One of:
+  # xhigh | high | medium | low | minimal | none. Empty => provider default.
+  # Non-reasoning models (gpt-4o, Claude, Gemini) ignore it.
+  reasoning_effort: ""        # e.g. "high" for a gpt-5.x reviewer/judge
+  # --- Multi-model debate engine (Stage 8 / 14 / 18), opt-in ---
+  # Reuses primary_model + reviewer_model + fallback_models (deduped) as a debate
+  # panel: distinct models argue per role (round-robin), `debate_rounds` rebuttal
+  # round(s), then the independent reviewer_model SCORES + RANKS the perspectives
+  # and the stronger primary_model SYNTHESIZES the final text from that ranking
+  # (Stage 8/14). Stage 18 peer review keeps the reviewer synthesizing — author
+  # independence is the point there. Multiplies calls per debate stage.
+  #
+  # To enable debate for Stage 8 hypothesis generation, set:
+  #   debate_enabled: true        # required; otherwise the panel is empty and
+  #                               #   Stage 8 falls back to a single model
+  #   tournament_enabled: false   # required: on Stage 8 the tournament path takes
+  #                               #   priority, so leave it OFF to use debate
+  #   debate_rounds: 1            # rebuttal rounds (0 = opening statements only)
+  # and make the panel genuinely multi-model: primary_model + reviewer_model +
+  # fallback_models must dedupe to >= 2 distinct models (e.g. claude + gpt-4o +
+  # gemini-2.5-pro -> innovator / pragmatist / contrarian). reviewer_model should
+  # differ from primary_model so the judge is independent. Env overrides:
+  # ARC_DEBATE_ROUNDS, ARC_ABL_DISABLE_DEBATE=1 (collapse to a single role).
+  # debate_enabled: false
+  # debate_rounds: 1
+  # --- Best-of-N tournament selection (Stage 8 hypotheses / Stage 9 design), opt-in ---
+  # Generate N candidate artifacts from diverse stances (round-robin over the
+  # debate panel when available), then an independent judge (reviewer_model) scores
+  # and ranks them — only the single winner proceeds. Pipeline stays linear (one
+  # canonical artifact per stage). Records tournament_record.json per stage.
+  # Multiplies calls (~N generations + 1 judge per stage). < 2 disables it.
+  # tournament_enabled: false
+  # tournament_candidates: 3
   # --- MiniMax provider example ---
   # provider: "minimax"
   # api_key_env: "MINIMAX_API_KEY"
@@ -66,6 +112,10 @@ experiment:
   max_iterations: 10
   metric_key: "primary_metric"
   metric_direction: "minimize"
+  # Stage 10→12 冒烟测试:全量前用 ARC_SMOKE=1 小跑生成代码抓运行时崩溃
+  # 仅 sandbox/docker 且对应 network_policy != none 时生效
+  smoke_test_enabled: true
+  smoke_test_timeout_sec: 600   # main.py 执行限时(秒),不含 provisioning
   sandbox:
     # Use ".venv/Scripts/python.exe" on Windows
     python_path: ".venv/bin/python3"

@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
@@ -24,10 +25,340 @@ from researchclaw.pipeline._helpers import (
     _safe_json_loads,
     _utcnow_iso,
 )
+from researchclaw.pipeline.environment import parse_manifest, resolve_environment
 from researchclaw.pipeline.stages import Stage, StageStatus
 from researchclaw.prompts import PromptManager
 
 logger = logging.getLogger(__name__)
+
+
+def _scan_cached_datasets(run_dir: Path) -> set[str]:
+    """Collect lowercased names of datasets already present on disk, so the
+    environment resolver can mark them CACHED rather than NEEDS_DOWNLOAD."""
+    tokens: set[str] = set()
+    for d in (
+        Path("/opt/datasets"),
+        Path.home() / ".cache" / "datasets",
+        run_dir / "workspace" / "data",
+        run_dir / "data",
+    ):
+        try:
+            if d.is_dir():
+                for child in d.iterdir():
+                    tokens.add(child.name.lower())
+        except OSError:
+            continue
+    return tokens
+
+
+# P3: max automatic redesign passes when the plan is infeasible on the hardware.
+_MAX_ENV_REDESIGN = 2
+
+
+def _resolve_environment_for_plan(plan: Any, run_dir: Path, config: RCConfig):
+    """Parse + resolve the plan's environment manifest against the real runtime.
+
+    Pure (no disk writes). Returns an EnvironmentResolution, or None on error.
+    """
+    try:
+        from researchclaw.pipeline.stage_impls._code_generation import _probe_packages
+
+        manifest = parse_manifest(plan if isinstance(plan, dict) else {})
+        installed: dict[str, bool] | None = None
+        if manifest.import_names:
+            installed = _probe_packages(
+                config.experiment.sandbox.python_path,
+                candidates=manifest.import_names,
+            )
+        return resolve_environment(
+            manifest,
+            installed or {},
+            hw_profile=_load_hardware_profile(run_dir),
+            cached_datasets=_scan_cached_datasets(run_dir),
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Stage 9 environment resolution failed", exc_info=True)
+        return None
+
+
+def _redesign_prompt(plan: Any, constraint: str, hw_profile: Any) -> str:
+    hw_str = json.dumps(hw_profile) if hw_profile else "unknown"
+    return (
+        "The experiment plan below is INFEASIBLE on the available hardware.\n"
+        f"Hardware: {hw_str}\n"
+        f"Problem: {constraint}\n\n"
+        "Redesign the plan to FIT this hardware while keeping the SAME research "
+        "goal and hypotheses. Levers: use a smaller open-weight model, QLoRA/4-bit "
+        "quantization, gradient checkpointing, smaller batch/sequence length, fewer "
+        "parameters, or drop the single component that cannot fit. Do NOT assume "
+        "bigger GPUs or more VRAM than listed above.\n"
+        "Re-emit the COMPLETE YAML plan (ALL keys, including the `environment` block "
+        "with an updated `compute` section reflecting the smaller design). "
+        "Return ONLY the YAML.\n\n"
+        f"Current plan:\n```yaml\n"
+        f"{yaml.dump(plan, default_flow_style=False, allow_unicode=True)}\n```"
+    )
+
+
+def _feasibility_redesign(
+    plan: Any, resolution, run_dir: Path, config: RCConfig, llm: LLMClient | None,
+    *, max_attempts: int = _MAX_ENV_REDESIGN,
+):
+    """P3: if the plan is infeasible on this hardware, re-prompt the design LLM
+    with the constraint and regenerate, up to *max_attempts* times.
+
+    Returns (plan, resolution, attempts). Stops as soon as the plan becomes
+    provisionable, or after max_attempts (leaving an infeasible plan for the
+    human gate to handle — never silently proceeds as if feasible).
+    """
+    attempts = 0
+    while (
+        resolution is not None
+        and resolution.declared
+        and not resolution.provisionable
+        and llm is not None
+        and attempts < max_attempts
+    ):
+        attempts += 1
+        hw = _load_hardware_profile(run_dir)
+        constraint = resolution.compute_detail or "the plan exceeds available hardware"
+        logger.warning(
+            "Stage 9 INFEASIBLE (redesign %d/%d): %s",
+            attempts, max_attempts, constraint,
+        )
+        try:
+            resp = llm.chat(
+                [{"role": "user", "content": _redesign_prompt(plan, constraint, hw)}],
+                max_tokens=8000,
+            )
+            parsed = _unwrap_plan_dict(yaml.safe_load(_extract_yaml_block(resp.content)))
+            if isinstance(parsed, dict):
+                plan = parsed
+            else:
+                logger.warning("Stage 9 redesign produced unparseable plan; stopping")
+                break
+        except Exception:  # noqa: BLE001
+            logger.debug("Stage 9 redesign attempt failed", exc_info=True)
+            break
+        resolution = _resolve_environment_for_plan(plan, run_dir, config)
+    return plan, resolution, attempts
+
+
+def _write_environment_resolution(
+    stage_dir: Path, resolution, redesign_attempts: int,
+    dataset_verdicts: dict | None = None,
+) -> bool:
+    """Persist the resolution artifacts. Returns True on success."""
+    if resolution is None:
+        return False
+    try:
+        data = resolution.to_dict()
+        data["redesign_attempts"] = redesign_attempts
+        if dataset_verdicts:
+            data["dataset_verification"] = dataset_verdicts
+        (stage_dir / "environment_resolution.json").write_text(
+            json.dumps(data, indent=2), encoding="utf-8"
+        )
+        # P8: datasets whose source could not be verified as real → gate-visible.
+        _missing = {n: v for n, v in (dataset_verdicts or {}).items()
+                    if v.get("status") == "MISSING"}
+        if _missing:
+            lines = ["# ⛔ Dataset source(s) NOT FOUND (could be invented ids)\n",
+                     "These declared datasets do not exist as a real public source. "
+                     "The experiment will fail at download — fix the source or approve "
+                     "a real alternative:\n"]
+            for n, v in _missing.items():
+                cands = ", ".join(c["id"] for c in v.get("candidates", [])[:6]) or "(none found)"
+                lines.append(f"- `{n}` → source `{v.get('source','')}` NOT FOUND. "
+                             f"Real candidates: {cands}")
+            (stage_dir / "DATASET_UNVERIFIED.md").write_text("\n".join(lines) + "\n",
+                                                             encoding="utf-8")
+            logger.warning("Stage 9: dataset source(s) NOT FOUND: %s", list(_missing))
+        (stage_dir / "environment_resolution.md").write_text(
+            resolution.summary_md(), encoding="utf-8"
+        )
+        if resolution.declared and not resolution.provisionable:
+            # Prominent, gate-visible marker — do NOT proceed as if feasible.
+            (stage_dir / "INFEASIBLE.md").write_text(
+                "# ⛔ Experiment plan INFEASIBLE on this hardware\n\n"
+                f"After {redesign_attempts} automatic redesign attempt(s) the plan "
+                f"still does not fit:\n\n> {resolution.compute_detail}\n\n"
+                "Human action required at the gate: provide bigger hardware, relax "
+                "the requirement, or approve a manually-scoped-down plan.\n\n"
+                + resolution.summary_md(),
+                encoding="utf-8",
+            )
+            logger.warning(
+                "Stage 9 STILL INFEASIBLE after %d redesign(s): %s",
+                redesign_attempts, resolution.compute_detail,
+            )
+        # P4: system libraries pip cannot install — surface an explicit operator
+        # action (academic-rigor-first: keep the rigorous tool, prompt root to
+        # install its system deps, rather than degrading the design).
+        if resolution.needs_operator:
+            cmds = resolution.operator_setup_lines()
+            (stage_dir / "OPERATOR_SETUP.md").write_text(
+                "# 🔧 Operator setup required (system libraries)\n\n"
+                "The experiment uses tools whose OS-level libraries pip cannot "
+                "install. A human with root must run these BEFORE the experiment "
+                "(pip packages and dataset downloads are handled automatically):\n\n"
+                "```bash\n" + "\n".join(cmds) + "\n```\n\n"
+                "Declared system libs: " + ", ".join(resolution.needs_operator) + "\n",
+                encoding="utf-8",
+            )
+            logger.warning(
+                "Stage 9: operator must install system libs: %s",
+                ", ".join(resolution.needs_operator),
+            )
+        return True
+    except OSError:  # noqa: BLE001
+        logger.debug("Stage 9 environment resolution write failed", exc_info=True)
+        return False
+
+
+def _audit_compute_budget(plan: Any, time_budget_sec: int) -> list[str]:
+    """Deterministic sanity check of the plan's compute_budget arithmetic.
+
+    Run-4 root cause: the design LLM wrote internally-consistent but invented
+    numbers (5 seeds x guessed seconds_per_seed, a 20K-oracle-call collection
+    phase) that no one re-derived. The LLM cannot be trusted to audit its own
+    arithmetic — this check is code, not prompt.
+    """
+    findings: list[str] = []
+    if not isinstance(plan, dict):
+        return findings
+    cb = plan.get("compute_budget")
+    if not isinstance(cb, dict):
+        findings.append("compute_budget section is missing entirely.")
+        return findings
+    conds = cb.get("conditions") or []
+    total = 0
+    for c in conds:
+        if not isinstance(c, dict):
+            continue
+        sps = c.get("seconds_per_seed") or 0
+        seeds = c.get("seeds") or 0
+        declared = c.get("total")
+        try:
+            expect = float(sps) * float(seeds)
+            total += expect
+            if declared is not None and abs(float(declared) - expect) > max(60.0, 0.05 * expect):
+                findings.append(
+                    f"condition `{c.get('name','?')}`: declared total {declared}s "
+                    f"!= seconds_per_seed×seeds = {expect:.0f}s."
+                )
+        except (TypeError, ValueError):
+            findings.append(f"condition `{c.get('name','?')}`: non-numeric budget fields.")
+    cap = 0.8 * float(time_budget_sec)
+    if total > cap:
+        findings.append(
+            f"sum of condition budgets {total:.0f}s exceeds the 80% stop line "
+            f"({cap:.0f}s of {time_budget_sec}s) — later conditions WILL be "
+            f"starved/truncated at runtime."
+        )
+    if conds and not isinstance(cb.get("unit_costs"), dict):
+        findings.append(
+            "compute_budget has no `unit_costs` map — per-seed times are "
+            "underived guesses; require sec_per_llm_generation / "
+            "sec_per_oracle_call / sec_per_train_step assumptions."
+        )
+    return findings
+
+
+# P8: max automatic redesign passes when a declared dataset source is not real.
+_MAX_DATASET_REDESIGN = 2
+
+
+def _verify_plan_datasets(plan: Any, *, online: bool = True) -> dict:
+    """Verify each declared dataset source against HuggingFace (fail-soft)."""
+    try:
+        from researchclaw.pipeline.dataset_verify import verify_manifest_datasets
+        from researchclaw.pipeline.environment import parse_manifest as _pm
+        return verify_manifest_datasets(
+            _pm(plan if isinstance(plan, dict) else {}), online=online
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Stage 9 dataset verification skipped", exc_info=True)
+        return {}
+
+
+def _dataset_redesign_prompt(plan: Any, missing: list[tuple]) -> str:
+    lines = ["One or more declared datasets do NOT exist as a real public source:"]
+    for name, source, cands in missing:
+        c = ", ".join(
+            f"{x['id']} ("
+            + ("ALREADY CACHED LOCALLY — strongly preferred"
+               if x.get("local_cache")
+               else f"downloads={x['downloads']}{', gated' if x.get('gated') else ''}")
+            + ")"
+            for x in cands[:6]
+        ) or "(no public candidates found)"
+        lines.append(f"- `{name}` source `{source}` → NOT FOUND. Real candidates: {c}")
+    lines.append(
+        "\nReplace each NOT-FOUND dataset's source with a REAL, verifiable one from "
+        "the candidates above that best fits the research intent (prefer non-gated, "
+        "with downloadable files). Update BOTH the top-level `datasets[].source` and "
+        "`environment.datasets[].source`. Keep everything else. Re-emit the COMPLETE "
+        "YAML plan. Return ONLY the YAML."
+    )
+    return (
+        f"Current plan:\n```yaml\n"
+        f"{yaml.dump(plan, default_flow_style=False, allow_unicode=True)}\n```\n\n"
+        + "\n".join(lines)
+    )
+
+
+def _dataset_source_redesign(
+    plan: Any, run_dir: Path, config: RCConfig, llm: LLMClient | None,
+    *, max_attempts: int = _MAX_DATASET_REDESIGN,
+):
+    """P8: if a declared dataset id is MISSING (e.g. invented), re-prompt the
+    design LLM with real HF candidates so it re-picks a genuine source.
+
+    Returns (plan, verdicts, attempts). Bounded; if it stays MISSING the
+    verdicts drive a gate-visible DATASET_UNVERIFIED.md (never silently proceeds).
+    """
+    verdicts = _verify_plan_datasets(plan)
+    attempts = 0
+    while llm is not None and attempts < max_attempts:
+        missing = [
+            (n, v.get("source", ""), v.get("candidates", []))
+            for n, v in verdicts.items() if v.get("status") == "MISSING"
+        ]
+        if not missing or not any(c for _, _, c in missing):
+            break  # nothing missing, or no real candidates to suggest
+        attempts += 1
+        logger.warning(
+            "Stage 9 dataset(s) NOT FOUND (redesign %d/%d): %s",
+            attempts, max_attempts, [m[0] for m in missing],
+        )
+        try:
+            resp = llm.chat(
+                [{"role": "user", "content": _dataset_redesign_prompt(plan, missing)}],
+                max_tokens=8000,
+            )
+            parsed = _unwrap_plan_dict(yaml.safe_load(_extract_yaml_block(resp.content)))
+            if not isinstance(parsed, dict):
+                break
+            plan = parsed
+        except Exception:  # noqa: BLE001
+            logger.debug("Stage 9 dataset redesign attempt failed", exc_info=True)
+            break
+        verdicts = _verify_plan_datasets(plan)
+    return plan, verdicts, attempts
+
+
+# Best-of-N exploration stances for the Stage 9 design tournament. Each candidate
+# plan is generated with one stance appended, giving breadth even with a single
+# generator model. Domain-agnostic.
+_DESIGN_ANGLES = (
+    "Be ambitious: prioritize high-ceiling, novel methods that could yield a "
+    "strong result, accepting higher risk.",
+    "Be robust: prioritize strong, well-known baselines and a clean, defensible "
+    "comparison over novelty.",
+    "Be compute-efficient: design the most decisive experiment that fits a tight "
+    "compute budget — minimal but conclusive.",
+)
 
 
 def _normalize_plan_field(value: Any) -> list:
@@ -71,6 +402,28 @@ def _plan_field_names(items: list) -> list[str]:
     return result
 
 
+_PLAN_KEYS = frozenset({
+    "objectives", "datasets", "baselines", "proposed_methods",
+    "ablations", "metrics", "risks", "compute_budget",
+})
+
+
+def _unwrap_plan_dict(parsed: Any) -> Any:
+    """Unwrap a plan nested under a single parent key.
+
+    Models sometimes emit ``{experiment_plan: {objectives: ..., ...}}`` instead
+    of the keys at top level. If the parsed dict has none of the expected plan
+    keys at top level but a single dict child that does, return the child.
+    """
+    if not isinstance(parsed, dict) or _PLAN_KEYS & parsed.keys():
+        return parsed
+    if len(parsed) == 1:
+        only = next(iter(parsed.values()))
+        if isinstance(only, dict) and (_PLAN_KEYS & only.keys()):
+            return only
+    return parsed
+
+
 def _execute_experiment_design(
     stage_dir: Path,
     run_dir: Path,
@@ -80,6 +433,24 @@ def _execute_experiment_design(
     llm: LLMClient | None = None,
     prompts: PromptManager | None = None,
 ) -> StageResult:
+    # Re-entry snapshot: a from-stage re-run overwrites stage-09 in place, which
+    # destroys the previous plan AND its verified facts (dataset source, model,
+    # measured budgets) — run-4 lost the run-3 plan this way. Archive first.
+    try:
+        if (stage_dir / "exp_plan.yaml").exists():
+            import shutil as _shutil_snap
+
+            _versions = [
+                int(p.name.replace("stage-09_v", ""))
+                for p in run_dir.glob("stage-09_v*")
+                if p.is_dir() and p.name.replace("stage-09_v", "").isdigit()
+            ]
+            _snap = run_dir / f"stage-09_v{max(_versions or [0]) + 1}"
+            _shutil_snap.copytree(stage_dir, _snap, dirs_exist_ok=True)
+            logger.info("Stage 9 re-entry: prior artifacts archived to %s", _snap.name)
+    except OSError:
+        logger.warning("Stage 9 re-entry snapshot failed", exc_info=True)
+
     hypotheses = _read_prior_artifact(run_dir, "hypotheses.md") or ""
     preamble = _build_context_preamble(
         config, run_dir, include_goal=True, include_hypotheses=True
@@ -95,6 +466,7 @@ def _execute_experiment_design(
         _domain_profile = _detect_domain_adv(
             topic=config.research.topic,
             hypotheses=hypotheses,
+            configured_domains=config.research.domains,
         )
         logger.info(
             "Domain detected: %s (%s)",
@@ -188,12 +560,28 @@ def _execute_experiment_design(
                     _dg_block += _fw_docs
         except Exception:  # noqa: BLE001
             pass
-        # Improvement A: Compute hardware profile + per-condition budget
-        _hw_profile_str = (
-            "- GPU: NVIDIA RTX 6000 Ada (49140 MB VRAM)\n"
-            "- GPU count: 1\n"
-            "- CPU: shared server"
-        )
+        # Improvement A: Compute hardware profile + per-condition budget.
+        # Use the real detected profile (stage-01/hardware_profile.json) instead
+        # of a hardcoded placeholder, so the design respects actual GPU count/VRAM.
+        _hw = _load_hardware_profile(run_dir)
+        if _hw and _hw.get("has_gpu"):
+            _hw_name = _hw.get("gpu_name", "GPU")
+            _hw_vram = _hw.get("vram_mb")
+            _hw_count = int(_hw.get("gpu_count", 1) or 1)
+            _hw_total = _hw.get("total_vram_mb")
+            _vram_str = f"{_hw_vram} MB VRAM per card" if _hw_vram else "VRAM unknown"
+            _total_str = f", {_hw_total} MB total" if _hw_total and _hw_count > 1 else ""
+            _hw_profile_str = (
+                f"- GPU: {_hw_name} ({_vram_str}{_total_str})\n"
+                f"- GPU count: {_hw_count}\n"
+                "- CPU: shared server"
+            )
+        else:
+            _hw_profile_str = (
+                "- GPU: none detected (CPU only)\n"
+                "- GPU count: 0\n"
+                "- CPU: shared server"
+            )
         _per_condition_sec = int(config.experiment.time_budget_sec * 0.7 / 6)
         _tier1 = "CIFAR-10, CIFAR-100, MNIST, FashionMNIST, STL-10, SVHN"
 
@@ -212,13 +600,47 @@ def _execute_experiment_design(
             per_condition_budget_sec=_per_condition_sec,
             available_tier1_datasets=_tier1,
         )
-        resp = _chat_with_prompt(
-            llm,
-            sp.system,
-            sp.user,
-            json_mode=sp.json_mode,
-            max_tokens=sp.max_tokens,
-        )
+        if config.llm.tournament_enabled and config.llm.tournament_candidates >= 2:
+            # --- Best-of-N tournament: generate N candidate plans from diverse
+            # stances, then an independent judge picks the winner. Downstream YAML
+            # parsing / normalization / caps / BenchmarkAgent run on the winner.
+            from researchclaw.llm import build_panel_llms, build_reviewer_llm
+            from researchclaw.pipeline.tournament import (
+                effective_candidates,
+                run_tournament,
+            )
+
+            _gens = build_panel_llms(config) or [llm]
+            _judge = build_reviewer_llm(config) or llm
+            _n = effective_candidates(config.llm.tournament_candidates)
+            _cps = [
+                (
+                    sp.system,
+                    sp.user
+                    + "\n\n## Exploration stance\n"
+                    + _DESIGN_ANGLES[i % len(_DESIGN_ANGLES)],
+                )
+                for i in range(_n)
+            ]
+            _winner, _ = run_tournament(
+                _gens,
+                _judge,
+                _cps,
+                rank_prompt="tournament_rank",
+                out_dir=stage_dir / "tournament",
+                prompts=_pm,
+                author_model=getattr(llm.config, "primary_model", ""),
+                label="plan",
+            )
+            resp = SimpleNamespace(content=_winner)
+        else:
+            resp = _chat_with_prompt(
+                llm,
+                sp.system,
+                sp.user,
+                json_mode=sp.json_mode,
+                max_tokens=sp.max_tokens,
+            )
         raw_yaml = _extract_yaml_block(resp.content)
         try:
             parsed = yaml.safe_load(raw_yaml)
@@ -257,7 +679,7 @@ def _execute_experiment_design(
                 except yaml.YAMLError:
                     pass
         if isinstance(parsed, dict):
-            plan = parsed
+            plan = _unwrap_plan_dict(parsed)
         else:
             logger.warning(
                 "Stage 09: LLM response could not be parsed as YAML "
@@ -270,23 +692,35 @@ def _execute_experiment_design(
             # BUG-12: Retry with a stricter, shorter prompt
             if llm is not None:
                 logger.info("Stage 09: Retrying with strict YAML-only prompt...")
+                # Keep the retry GROUNDED: a context-free retry produces generic
+                # plans that ignore the hardware and hypotheses (e.g. 128xA100,
+                # 34B models, GPT-4 baselines). Re-inject the real constraints.
                 _retry_prompt = (
                     "Output ONLY valid YAML. No prose, no markdown fences, no explanation.\n"
                     f"Topic: {config.research.topic}\n"
                     "Required keys: baselines, proposed_methods, ablations, "
                     "datasets, metrics, objectives, risks, compute_budget.\n"
-                    "Each key maps to a list of strings."
+                    "Each key maps to a SHORT list of one-line strings (<=7 each).\n\n"
+                    "HARD CONSTRAINTS:\n"
+                    f"- Hardware (use ONLY this): {_hw_profile_str}\n"
+                    "- compute_budget MUST be in GPU-hours on the hardware above; "
+                    "NO A100/H100 clusters or cloud dollar budgets.\n"
+                    "- Open-weight models ONLY (no GPT-4 / proprietary APIs).\n"
+                    "- Metrics must be automatically computable in code (no human studies).\n"
+                    "- baselines/proposed_methods/ablations MUST derive from the "
+                    "hypotheses below.\n\n"
+                    f"Hypotheses:\n{hypotheses[:4000]}"
                 )
                 _retry_resp = _chat_with_prompt(
                     llm,
                     "You output ONLY valid YAML. Nothing else.",
                     _retry_prompt,
-                    max_tokens=4096,
+                    max_tokens=8000,
                 )
                 try:
                     _retry_parsed = yaml.safe_load(_retry_resp.content)
                     if isinstance(_retry_parsed, dict):
-                        plan = _retry_parsed
+                        plan = _unwrap_plan_dict(_retry_parsed)
                         logger.info("Stage 09: Strict YAML retry succeeded.")
                 except yaml.YAMLError:
                     pass
@@ -354,6 +788,7 @@ def _execute_experiment_design(
             _ba_domain_profile = _detect_domain_adv(
                 topic=config.research.topic,
                 hypotheses=hypotheses,
+                configured_domains=config.research.domains,
             )
         except Exception:  # noqa: BLE001
             logger.debug("BenchmarkAgent domain detection unavailable", exc_info=True)
@@ -400,7 +835,8 @@ def _execute_experiment_design(
                 llm,
                 config=_ba_cfg,
                 gpu_memory_mb=(
-                    _hw.get("gpu_memory_mb", 49000) if _hw else 49000
+                    _hw.get("vram_mb") or _hw.get("gpu_memory_mb") or 49000
+                    if _hw else 49000
                 ),
                 time_budget_sec=config.experiment.time_budget_sec,
                 network_policy=(
@@ -552,13 +988,53 @@ def _execute_experiment_design(
     except Exception:
         pass
 
+    # P1+P3: resolve the environment manifest against the real runtime; if the
+    # plan is infeasible on this hardware, redesign it (bounded) BEFORE writing,
+    # so feasibility is visible at the gate and codegen never gets a plan it
+    # cannot run (which is what forces synthetic/placeholder code).
+    _resolution = _resolve_environment_for_plan(plan, run_dir, config)
+    plan, _resolution, _redesign_n = _feasibility_redesign(
+        plan, _resolution, run_dir, config, llm
+    )
+
+    # P8: verify declared dataset sources are REAL (HF metadata, fail-soft); if a
+    # source is invented/missing, re-prompt with real candidates so the design
+    # re-picks a genuine one. Re-resolve so the written resolution is consistent.
+    plan, _ds_verdicts, _ds_n = _dataset_source_redesign(plan, run_dir, config, llm)
+    if _ds_n:  # plan changed → refresh feasibility resolution
+        _resolution = _resolve_environment_for_plan(plan, run_dir, config) or _resolution
+
     (stage_dir / "exp_plan.yaml").write_text(
         yaml.dump(plan, default_flow_style=False, allow_unicode=True),
         encoding="utf-8",
     )
+    _env_resolved = _write_environment_resolution(
+        stage_dir, _resolution, _redesign_n, dataset_verdicts=_ds_verdicts
+    )
+
+    # Deterministic budget-arithmetic audit — gate-visible, never blocks on its own.
+    _budget_findings = _audit_compute_budget(
+        plan, getattr(config.experiment, "time_budget_sec", 0) or 0
+    )
+    if _budget_findings:
+        (stage_dir / "BUDGET_AUDIT.md").write_text(
+            "# ⚠️ compute_budget audit findings\n\n"
+            "These numbers are arithmetically suspect — re-derive them from unit "
+            "costs before approving the gate:\n\n"
+            + "\n".join(f"- {w}" for w in _budget_findings) + "\n",
+            encoding="utf-8",
+        )
+        for _w in _budget_findings:
+            logger.warning("Stage 9 budget audit: %s", _w)
+
+    _artifacts = ("exp_plan.yaml",)
+    _evidence = ("stage-09/exp_plan.yaml",)
+    if _env_resolved:
+        _artifacts = _artifacts + ("environment_resolution.json",)
+        _evidence = _evidence + ("stage-09/environment_resolution.json",)
     return StageResult(
         stage=Stage.EXPERIMENT_DESIGN,
         status=StageStatus.DONE,
-        artifacts=("exp_plan.yaml",),
-        evidence_refs=("stage-09/exp_plan.yaml",),
+        artifacts=_artifacts,
+        evidence_refs=_evidence,
     )

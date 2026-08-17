@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+
+import yaml
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,119 @@ from researchclaw.pipeline.stages import Stage, StageStatus
 from researchclaw.prompts import PromptManager
 
 logger = logging.getLogger(__name__)
+
+
+def _load_provided_libs(run_dir: Path) -> dict[str, str]:
+    """Verified, operator-provided Python modules for this run.
+
+    A run can pin known-good helper modules (e.g. a dataset→executable
+    transpiler whose correctness the LLM cannot reliably reproduce) under
+    ``<run_dir>/provided_libs/*.py``. These are injected into the generated
+    project verbatim and the codegen prompt is told to import — not
+    reimplement — them. Returns {filename: source}; empty if none.
+    """
+    src = run_dir / "provided_libs"
+    libs: dict[str, str] = {}
+    if not src.is_dir():
+        return libs
+    for p in sorted(src.glob("*.py")):
+        if p.name.startswith("_") or p.name == "__init__.py":
+            continue
+        try:
+            libs[p.name] = p.read_text(encoding="utf-8")
+        except OSError as exc:  # noqa: BLE001
+            logger.warning("provided_libs: could not read %s: %s", p, exc)
+    return libs
+
+
+def _provided_libs_guidance(libs: dict[str, str]) -> str:
+    """Build a codegen guidance block listing each provided lib's COMPLETE public API."""
+    if not libs:
+        return ""
+    lines = [
+        "\n## Provided verified modules (import, do NOT reimplement)\n",
+        "The following modules are ALREADY PRESENT in your workspace, verified "
+        "correct, and will be injected into the final project. You MUST import and "
+        "call them instead of writing your own version of their functionality "
+        "(re-implementing them is a known failure source — e.g. a dataset→code "
+        "transpiler that silently mis-parses the schema and zeroes every metric).\n",
+        "CRITICAL — the list below each module is its COMPLETE export set. Import "
+        "ONLY these exact names. Do NOT import any name that is not listed (it does "
+        "not exist and will raise ImportError at startup). If you need any other "
+        "helper (constraint-token augmentation, op/complexity counting, tokenizer "
+        "setup, etc.), IMPLEMENT IT YOURSELF in your own files — do NOT assume it "
+        "lives in these modules.\n",
+        "READ EACH FUNCTION'S DOCSTRING (shown below) AND RESPECT ITS SEMANTICS. "
+        "In particular, mind what each function RETURNS: do NOT feed one function's "
+        "OUTPUT into another function that expects a different input. If a function "
+        "already returns the final product (e.g. a 'sample → executable code' helper "
+        "that returns ready-to-run code), use its result directly — do NOT pass it "
+        "through a lower-level converter again (double-conversion silently produces "
+        "garbage and zeroes every metric).\n",
+    ]
+    import ast as _ast
+
+    for name, src in libs.items():
+        mod = name[:-3]
+        api_lines: list[str] = []
+        try:
+            tree = _ast.parse(src)
+            for node in tree.body:
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and not node.name.startswith("_"):
+                    args = ", ".join(a.arg for a in node.args.args)
+                    doc = (_ast.get_docstring(node) or "").strip().splitlines()
+                    doc1 = " ".join(l.strip() for l in doc if l.strip())[:200]
+                    api_lines.append(f"    def {node.name}({args})" + (f"  — {doc1}" if doc1 else ""))
+                elif isinstance(node, _ast.ClassDef) and not node.name.startswith("_"):
+                    api_lines.append(f"    class {node.name}")
+                elif isinstance(node, _ast.Assign):
+                    for t in node.targets:
+                        if isinstance(t, _ast.Name) and t.id.isupper():
+                            api_lines.append(f"    {t.id}  (module constant)")
+        except SyntaxError:
+            api_lines = ["    (see file)"]
+        api = "\n".join(api_lines[:25]) or "    (see file)"
+        lines.append(
+            f"- `{name}` — import as `from {mod} import ...`. COMPLETE exports "
+            f"(import only these), with docstrings:\n{api}\n"
+        )
+    return "\n".join(lines)
+
+
+def _run_smoke_test(exp_dir: Path, config: RCConfig, timeout_sec: int) -> tuple[str, str]:
+    """Run the generated project on a tiny budget (ARC_SMOKE=1) to catch runtime
+    crashes (import errors, NoneType, param clobber, DataParallel scatter) in
+    minutes instead of hours into the full Stage-12 run.
+
+    Returns (status, detail):
+      - "pass": completed cleanly, OR ran the whole timeout window without
+        crashing (startup/first-step bugs — the class this catches — surface
+        immediately, so "no crash in the window" clears them);
+      - "fail": the process crashed (non-zero exit); detail is the stderr tail
+        (traceback) for the repair step;
+      - "skip": the smoke harness itself errored (do not block the stage on that).
+    """
+    from researchclaw.experiment.factory import create_sandbox
+
+    try:
+        sandbox = create_sandbox(config.experiment, exp_dir.parent / "smoke_sandbox")
+        res = sandbox.run_project(
+            exp_dir, timeout_sec=timeout_sec, env_overrides={"ARC_SMOKE": "1"}
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Stage 10 smoke test harness error (not blocking): %s", exc)
+        return "skip", f"smoke harness error: {exc}"
+
+    if getattr(res, "timed_out", False):
+        return "pass", (
+            f"ran {timeout_sec}s without crashing (timed out; startup/first-step "
+            "bugs are absent — those crash immediately)"
+        )
+    if res.returncode == 0:
+        return "pass", "completed cleanly under ARC_SMOKE"
+    tb = (res.stderr or "")[-3000:] or (res.stdout or "")[-1500:]
+    return "fail", tb
+
 
 # Improvement G: Continuous-action environments that are incompatible with DQN
 _CONTINUOUS_ENVS = {
@@ -224,6 +339,245 @@ def _check_rl_compatibility(code: str) -> list[str]:
     return errors
 
 
+# Candidate import names probed in the real runtime environment so the code
+# generator is told the truth about what is installed. Import names (e.g.
+# "sklearn", "PIL", "cv2"), not pip names. Bounded list keeps the probe to one
+# fast subprocess (find_spec does not import the module).
+_PKG_PROBE_CANDIDATES: tuple[str, ...] = (
+    # core scientific
+    "numpy", "scipy", "pandas", "sklearn", "matplotlib", "seaborn", "statsmodels",
+    # deep learning frameworks
+    "torch", "torchvision", "torchaudio", "jax", "tensorflow",
+    # HF / LLM fine-tuning stack
+    "transformers", "datasets", "accelerate", "peft", "bitsandbytes", "trl",
+    "sentencepiece", "tokenizers", "safetensors",
+    # utils
+    "tqdm", "einops", "timm", "torchmetrics", "networkx", "h5py", "PIL", "yaml",
+    "cv2", "numba", "joblib",
+    # RL
+    "gymnasium", "gym", "stable_baselines3",
+    # geometry / CAD / mesh
+    "cadquery", "trimesh", "open3d", "OCP", "FreeCAD", "shapely",
+    # bio / chem
+    "rdkit", "Bio",
+)
+
+
+def _probe_packages(
+    python_path: str,
+    candidates: tuple[str, ...] = _PKG_PROBE_CANDIDATES,
+    *,
+    timeout: float = 30.0,
+) -> dict[str, bool] | None:
+    """Probe which of *candidates* are importable in *python_path*'s env.
+
+    Runs one subprocess using ``importlib.util.find_spec`` (which locates but
+    does not execute modules). Returns ``{name: installed}`` or ``None`` if the
+    probe could not run (so callers fall back to a static hint rather than
+    breaking the pipeline).
+    """
+    import subprocess
+
+    script = (
+        "import importlib.util as u, json, sys\n"
+        "def has(n):\n"
+        "    try:\n"
+        "        return u.find_spec(n) is not None\n"
+        "    except Exception:\n"
+        "        return False\n"
+        "names = json.loads(sys.argv[1])\n"
+        "print(json.dumps({n: has(n) for n in names}))\n"
+    )
+    try:
+        result = subprocess.run(
+            [python_path, "-c", script, json.dumps(list(candidates))],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("pkg probe could not run (%s): %s", python_path, exc)
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        logger.warning(
+            "pkg probe failed (%s, rc=%s): %s",
+            python_path, result.returncode, (result.stderr or "")[:200],
+        )
+        return None
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError) as exc:
+        logger.warning("pkg probe output unparseable: %s", exc)
+        return None
+
+
+def _device_hint(hw_profile: dict[str, Any] | None) -> str:
+    """GPU/CPU device guidance line(s) for the package hint."""
+    if hw_profile and hw_profile.get("has_gpu"):
+        gpu_type = hw_profile.get("gpu_type", "cuda")
+        gpu_name = hw_profile.get("gpu_name", "GPU")
+        tier = hw_profile.get("tier", "limited")
+        if tier == "high":
+            return (
+                f"GPU: {gpu_name} ({gpu_type}). You MAY use PyTorch with GPU "
+                f"acceleration.\nUse `device = torch.device('{gpu_type}')` for "
+                f"tensor operations.\n"
+            )
+        return (
+            f"GPU: {gpu_name} ({gpu_type}) — LIMITED performance.\n"
+            f"Use `device = torch.device('{gpu_type}')` but design LIGHTWEIGHT "
+            f"experiments:\n"
+            f"- Small models (<1M parameters)\n"
+            f"- Few epochs (<=20)\n"
+            f"- Small datasets (<=10K samples)\n"
+            f"- Avoid large batch sizes\n"
+        )
+    return ""
+
+
+def _build_pkg_hint(
+    config: RCConfig,
+    hw_profile: dict[str, Any] | None,
+    pm: PromptManager,
+) -> str:
+    """Build the AVAILABLE-PACKAGES hint for the code generator.
+
+    For sandbox mode the runtime interpreter is probed directly so the model is
+    told exactly what is installed (and that anything else will ImportError —
+    there is no pip install at runtime). Docker mode (image we don't control
+    from the host) and probe failures fall back to the previous static hint.
+    """
+    mode = config.experiment.mode
+    if mode not in ("sandbox", "docker"):
+        return ""
+
+    if mode == "sandbox":
+        probed = _probe_packages(config.experiment.sandbox.python_path)
+        if probed:
+            avail = sorted(n for n, ok in probed.items() if ok)
+            missing = sorted(n for n, ok in probed.items() if not ok)
+            gpu = _device_hint(hw_profile) or (
+                "No GPU detected — use `device = torch.device('cpu')`.\n"
+            )
+            miss_preview = ", ".join(missing[:8]) + ("…" if len(missing) > 8 else "")
+            missing_clause = f" (e.g. {miss_preview})" if missing else ""
+            policy = getattr(config.experiment.sandbox, "network_policy", "none")
+            if policy and policy != "none":
+                avail_clause = (
+                    f"These are PRE-INSTALLED. You MAY use additional packages "
+                    f"by listing them in requirements.txt — a setup phase pip-installs "
+                    f"it (and runs setup.py for dataset downloads) before the run. "
+                    f"Pre-installed missing examples{missing_clause}.\n"
+                )
+            else:
+                avail_clause = (
+                    f"These are the ONLY non-stdlib packages installed. There is NO "
+                    f"pip install and NO network at runtime, so importing anything "
+                    f"not listed above WILL raise ImportError{missing_clause}.\n"
+                )
+            return (
+                f"\nAVAILABLE PACKAGES (sandbox mode — probed from the actual "
+                f"runtime `{config.experiment.sandbox.python_path}`):\n"
+                f"Python stdlib + {', '.join(avail)}.\n"
+                f"{avail_clause}"
+                f"{gpu}"
+            )
+        logger.warning(
+            "pkg_hint: probe failed for %s — falling back to static hint",
+            config.experiment.sandbox.python_path,
+        )
+
+    # Docker (curated image set) or sandbox-probe-failed: static fallback.
+    if mode == "docker":
+        pkg_prefix = "docker mode"
+        net_policy = config.experiment.docker.network_policy
+        base_pkgs = (
+            ", torchvision, torchaudio, matplotlib, seaborn, scipy, "
+            "tqdm, torchdiffeq, gymnasium, networkx, PyYAML, Pillow, "
+            "transformers, datasets, accelerate, peft, bitsandbytes, "
+            "timm, einops, torchmetrics, h5py"
+        )
+        if net_policy == "none":
+            pkg_extras = base_pkgs + " (ONLY pre-installed packages — NO pip install available)"
+        elif net_policy in ("setup_only", "pip_only"):
+            pkg_extras = base_pkgs + ", and additional pip-installable packages via requirements.txt"
+        else:
+            pkg_extras = base_pkgs + ", and additional pip-installable packages (auto-detected from imports)"
+    else:
+        pkg_prefix = "sandbox mode"
+        pkg_extras = ""
+
+    if hw_profile and hw_profile.get("has_gpu"):
+        return (
+            f"\nAVAILABLE PACKAGES ({pkg_prefix}): Python stdlib, numpy, torch, "
+            f"sklearn, scipy, pandas{pkg_extras}.\n"
+            f"{_device_hint(hw_profile)}"
+        )
+    return pm.block("pkg_hint_sandbox")
+
+
+def _build_env_description(config: RCConfig) -> str:
+    """Describe the configured experiment runtime so the code generator targets
+    the *real* environment instead of a hardcoded assumption.
+
+    The execution environment is whatever ``config.experiment.mode`` selects —
+    this string is injected into the beast-mode prompt (replacing the old
+    hardcoded "isolated Docker container with everything pre-installed" claim,
+    which was false for sandbox/ssh/colab modes).
+    """
+    mode = config.experiment.mode
+    if mode == "sandbox":
+        py = config.experiment.sandbox.python_path
+        policy = getattr(config.experiment.sandbox, "network_policy", "none")
+        if policy and policy != "none":
+            return (
+                f"local sandbox with a setup phase: first (network ON) a venv is "
+                f"built over the base env, `pip install -r requirements.txt` runs, "
+                f"then `setup.py` runs (dataset downloads); afterwards "
+                f"`{py} -u main.py` runs the experiment. Declare extra packages in "
+                f"requirements.txt and dataset downloads in setup.py — they WILL be "
+                f"provisioned. Base packages are listed in GUIDANCE.md."
+            )
+        return (
+            f"local sandbox subprocess — executed as `{py} -u main.py` in the "
+            f"pre-existing Python environment. NO internet access and NO pip "
+            f"install at runtime: use ONLY the packages listed in GUIDANCE.md "
+            f"(requirements.txt is NOT installed)."
+        )
+    if mode == "docker":
+        net = config.experiment.docker.network_policy
+        if net == "none":
+            net_txt = "offline (no network); requirements.txt is NOT installed"
+        elif net in ("setup_only", "pip_only"):
+            net_txt = (
+                "network limited to setup; extra packages may be pip-installed "
+                "via requirements.txt before main.py runs"
+            )
+        else:
+            net_txt = (
+                "network available; extra packages may be pip-installed and "
+                "datasets downloaded"
+            )
+        return (
+            f"isolated Docker container running `python main.py` — {net_txt}. "
+            f"Use the packages listed in GUIDANCE.md."
+        )
+    if mode == "ssh_remote":
+        return (
+            "remote machine over SSH running `python main.py`; use ONLY the "
+            "packages listed in GUIDANCE.md."
+        )
+    if mode == "colab_drive":
+        return (
+            "Google Colab runtime running `python main.py`; use ONLY the "
+            "packages listed in GUIDANCE.md."
+        )
+    return (
+        f"the configured '{mode}' experiment environment; use ONLY the packages "
+        f"listed in GUIDANCE.md and do not assume internet access."
+    )
+
+
 def _execute_code_generation(
     stage_dir: Path,
     run_dir: Path,
@@ -246,56 +600,11 @@ def _execute_code_generation(
     files: dict[str, str] = {}
     validation_log: list[str] = []
 
-    # --- Detect available packages for sandbox ---
     _pm = prompts or PromptManager()
 
-    # --- Hardware-aware package hint ---
+    # --- Package hint: probe the REAL runtime env (no hardcoded assumptions) ---
     hw_profile = _load_hardware_profile(run_dir)
-    if config.experiment.mode in ("sandbox", "docker"):
-        if config.experiment.mode == "docker":
-            pkg_prefix = "docker mode"
-            _net_policy = config.experiment.docker.network_policy
-            _base_pkgs = (
-                ", torchvision, torchaudio, matplotlib, seaborn, scipy, "
-                "tqdm, torchdiffeq, gymnasium, networkx, PyYAML, Pillow, "
-                "transformers, datasets, accelerate, peft, bitsandbytes, "
-                "timm, einops, torchmetrics, h5py"
-            )
-            if _net_policy == "none":
-                pkg_extras = _base_pkgs + " (ONLY pre-installed packages — NO pip install available)"
-            elif _net_policy in ("setup_only", "pip_only"):
-                pkg_extras = _base_pkgs + ", and additional pip-installable packages via requirements.txt"
-            else:
-                pkg_extras = _base_pkgs + ", and additional pip-installable packages (auto-detected from imports)"
-        else:
-            pkg_prefix = "sandbox mode"
-            pkg_extras = ""
-        if hw_profile and hw_profile.get("has_gpu"):
-            gpu_type = hw_profile.get("gpu_type", "cuda")
-            gpu_name = hw_profile.get("gpu_name", "GPU")
-            tier = hw_profile.get("tier", "limited")
-            if tier == "high":
-                device_hint = f"torch.device('{gpu_type}')"
-                pkg_hint = (
-                    f"\nAVAILABLE PACKAGES ({pkg_prefix}): Python stdlib, numpy, torch, sklearn, scipy, pandas{pkg_extras}.\n"
-                    f"GPU: {gpu_name} ({gpu_type}). You MAY use PyTorch with GPU acceleration.\n"
-                    f"Use `device = {device_hint}` for tensor operations.\n"
-                )
-            else:  # limited (low VRAM NVIDIA or MPS)
-                device_hint = f"torch.device('{gpu_type}')"
-                pkg_hint = (
-                    f"\nAVAILABLE PACKAGES ({pkg_prefix}): Python stdlib, numpy, torch, sklearn, scipy, pandas{pkg_extras}.\n"
-                    f"GPU: {gpu_name} ({gpu_type}) — LIMITED performance.\n"
-                    f"Use `device = {device_hint}` but design LIGHTWEIGHT experiments:\n"
-                    f"- Small models (<1M parameters)\n"
-                    f"- Few epochs (<=20)\n"
-                    f"- Small datasets (<=10K samples)\n"
-                    f"- Avoid large batch sizes\n"
-                )
-        else:
-            pkg_hint = _pm.block("pkg_hint_sandbox")
-    else:
-        pkg_hint = ""
+    pkg_hint = _build_pkg_hint(config, hw_profile, _pm)
 
     # --- Compute budget hint ---
     time_budget_sec = config.experiment.time_budget_sec
@@ -315,10 +624,14 @@ def _execute_code_generation(
     extra_guidance = ""
     _net_policy = getattr(getattr(config, "docker", None), "network_policy", "setup_only")
     if config.experiment.mode in ("sandbox", "docker"):
+        # P4: respect the real per-mode network policy. Sandbox now has its own
+        # network_policy (P2 provisioning) — do NOT hardcode "none", or codegen
+        # would be told "offline, no pip" while the setup phase actually installs
+        # requirements.txt / runs setup.py.
         _net_policy = (
             config.experiment.docker.network_policy
             if config.experiment.mode == "docker"
-            else "none"  # sandbox mode has no network
+            else config.experiment.sandbox.network_policy
         )
         if _net_policy == "none":
             # Network disabled: inject strict offline-only guidance
@@ -333,16 +646,16 @@ def _execute_code_generation(
             except Exception:  # noqa: BLE001
                 pass
         else:
-            # setup_only or pip_only — existing behavior
+            # setup_only / pip_only — a setup phase installs requirements.txt and
+            # runs setup.py (both docker AND sandbox under P2).
             try:
                 extra_guidance += _pm.block("dataset_guidance")
             except Exception:  # noqa: BLE001
                 pass
-            if config.experiment.mode == "docker":
-                try:
-                    extra_guidance += _pm.block("setup_script_guidance")
-                except Exception:  # noqa: BLE001
-                    pass
+            try:
+                extra_guidance += _pm.block("setup_script_guidance")
+            except Exception:  # noqa: BLE001
+                pass
         try:
             extra_guidance += _pm.block("hp_reporting")
         except Exception:  # noqa: BLE001
@@ -413,6 +726,15 @@ def _execute_code_generation(
             extra_guidance += _pm.block("rl_step_guidance")
         except Exception:  # noqa: BLE001
             pass
+
+    # A1: operator-provided verified modules — tell codegen to import, not reimplement
+    _provided_libs = _load_provided_libs(run_dir)
+    if _provided_libs:
+        extra_guidance += _provided_libs_guidance(_provided_libs)
+        logger.info(
+            "Stage 10: %d provided lib(s) will be injected: %s",
+            len(_provided_libs), ", ".join(_provided_libs),
+        )
 
     # --- F-01: Framework API doc injection (auto-detected) ---
     try:
@@ -573,6 +895,7 @@ def _execute_code_generation(
                     pkg_hint=pkg_hint + "\n" + compute_budget,
                     extra_guidance=extra_guidance,
                     time_budget_sec=config.experiment.time_budget_sec,
+                    env_description=_build_env_description(config),
                 )
 
                 # Persist beast mode log
@@ -803,6 +1126,32 @@ def _execute_code_generation(
             )
         }
 
+    # --- P6: security profile per file (academic-rigor-first) ---
+    # When provisioning is enabled the experiment legitimately downloads real
+    # data and runs real tools (subprocess/requests/shutil/exec); relax those
+    # bans instead of blocking the rigorous code. setup.py (the download script)
+    # gets the same relaxation. Otherwise stay strict.
+    if config.experiment.mode == "docker":
+        _provisioned = config.experiment.docker.network_policy != "none"
+    elif config.experiment.mode == "sandbox":
+        _provisioned = config.experiment.sandbox.network_policy != "none"
+    else:
+        _provisioned = False
+
+    def _sec_profile(_fname: str) -> str:
+        if _fname == "setup.py":
+            return "setup"
+        return "provisioned" if _provisioned else "strict"
+
+    # A1: overwrite any LLM-generated copy with the canonical provided lib, so
+    # cross-import checks see them and the verified version (never an LLM rewrite)
+    # is what ships. Provided libs are pre-verified, so they skip repair.
+    if _provided_libs:
+        for _ln, _lc in _provided_libs.items():
+            if _ln in files and files[_ln] != _lc:
+                logger.info("Stage 10: replacing LLM copy of provided lib %s with canonical version", _ln)
+            files[_ln] = _lc
+
     # --- Validate each file + auto-repair loop ---
     all_valid = True
     attempt = 0
@@ -810,7 +1159,7 @@ def _execute_code_generation(
         # Skip non-Python files (requirements.txt, setup.py, etc.)
         if not fname.endswith(".py"):
             continue
-        validation = validate_code(code)
+        validation = validate_code(code, security_profile=_sec_profile(fname))
         repair_attempt = 0
         while not validation.ok and llm is not None and repair_attempt < max_repair:
             repair_attempt += 1
@@ -846,7 +1195,7 @@ def _execute_code_generation(
                 files[fname] = _repaired
             else:
                 logger.warning("Repair attempt returned empty code, keeping original")
-            validation = validate_code(files[fname])
+            validation = validate_code(files[fname], security_profile=_sec_profile(fname))
         if not validation.ok:
             all_valid = False
             # BUG-14: Log remaining issues prominently
@@ -870,7 +1219,9 @@ def _execute_code_generation(
     if not all_valid:
         _has_critical = False
         for fname, code in files.items():
-            _v = validate_code(code)
+            if not fname.endswith(".py"):
+                continue
+            _v = validate_code(code, security_profile=_sec_profile(fname))
             if not _v.ok:
                 for issue in _v.issues:
                     if issue.severity == "error" and issue.category in (
@@ -927,6 +1278,124 @@ def _execute_code_generation(
                     "files — experiment may crash on import",
                     fname, _m,
                 )
+
+    # --- P5: academic-rigor enforcement (use the REAL declared tools/data) ---
+    from researchclaw.experiment.rigor_check import check_rigor as _check_rigor
+    from researchclaw.pipeline.environment import parse_manifest as _parse_manifest
+
+    try:
+        _plan_obj = yaml.safe_load(exp_plan) if exp_plan else {}
+    except yaml.YAMLError:
+        _plan_obj = {}
+    if not isinstance(_plan_obj, dict):
+        _plan_obj = {}
+    _manifest = _parse_manifest(_plan_obj)
+
+    # A. Merge the Stage-9 manifest's pip deps into requirements.txt so the real
+    #    tools (e.g. cadquery/OCP/transformers) are actually provisioned by P2 —
+    #    do not rely on the generator to remember them.
+    if _manifest.pip:
+        _existing = files.get("requirements.txt", "")
+        _have = {
+            re.split(r"[<>=!~\[ ]", ln.strip(), 1)[0].lower()
+            for ln in _existing.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        }
+        _add = [r.spec for r in _manifest.pip if r.pip_name.lower() not in _have]
+        if _add:
+            files["requirements.txt"] = (
+                (_existing.rstrip() + "\n" if _existing.strip() else "")
+                + "\n".join(_add) + "\n"
+            )
+            logger.info("P5: merged %d manifest pip dep(s) into requirements.txt: %s",
+                        len(_add), _add)
+
+    # A2. Filter LOCAL modules out of requirements.txt — generators sometimes
+    #     list a local file/module (e.g. the injected `experiment_harness`, or a
+    #     sibling `models.py`) as a pip dependency. Those don't exist on PyPI, so
+    #     `pip install -r` fails for the WHOLE file → real deps (cadquery/…) never
+    #     install. Drop any requirement whose name is a generated module.
+    if "requirements.txt" in files:
+        _local_mods = {f[:-3].lower() for f in files if f.endswith(".py")}
+        _local_mods |= {"experiment_harness", "main", "setup"}
+        _kept, _dropped = [], []
+        for ln in files["requirements.txt"].splitlines():
+            s = ln.strip()
+            if not s or s.startswith("#"):
+                _kept.append(ln)
+                continue
+            name = re.split(r"[<>=!~\[ @;]", s, 1)[0].strip().lower().replace("-", "_")
+            (_dropped if name in _local_mods else _kept).append(ln)
+        if _dropped:
+            files["requirements.txt"] = "\n".join(_kept).rstrip() + "\n"
+            logger.warning(
+                "Stage 10: dropped local-module lines from requirements.txt "
+                "(not pip packages): %s", [d.strip() for d in _dropped],
+            )
+
+    # D. Check rigor; repair (bounded) by re-prompting the generator to use the
+    #    REAL tools; block the stage if violations remain (never ship degraded).
+    _rigor = _check_rigor(files, _plan_obj, _manifest)
+    _rigor_attempt = 0
+    _MAX_RIGOR_REPAIR = 3
+    while not _rigor.ok and llm is not None and _rigor_attempt < _MAX_RIGOR_REPAIR:
+        _rigor_attempt += 1
+        logger.warning(
+            "Stage 10 P5 rigor violations (repair %d/%d): %s",
+            _rigor_attempt, _MAX_RIGOR_REPAIR, _rigor.violations,
+        )
+        _ctx = "\n\n".join(
+            f"```filename:{f}\n{c}\n```" for f, c in files.items() if f.endswith(".py")
+        )
+        _user = (
+            _rigor.as_feedback()
+            + "\n\nFix EXACTLY these violations in the named files. Concretely:\n"
+            "- DELETE any synthetic/dummy data generator function (e.g. "
+            "`generate_synthetic*`) AND every call to it. If the real declared "
+            "dataset cannot be downloaded, `raise RuntimeError(\"<dataset> "
+            "unavailable\")` instead — a failed run is acceptable, fabricated data "
+            "is NOT.\n"
+            "- Replace any rule-based/`mimic` oracle with actual execution of the "
+            "declared tool (e.g. run the CAD kernel).\n"
+            "- Import and actually use every declared real library/model.\n"
+            "Return the COMPLETE corrected file(s), each as a "
+            "```filename:<name>\\n<code>\\n``` block.\n\nCurrent files:\n" + _ctx
+        )
+        try:
+            resp = _chat_with_prompt(
+                llm,
+                "You are a rigorous research engineer. Never substitute rule-based "
+                "or synthetic stand-ins for the real tools the plan declares.",
+                _user,
+            )
+            _new = _extract_multi_file_blocks(resp.content)
+        except Exception:  # noqa: BLE001
+            logger.debug("P5 rigor repair attempt failed", exc_info=True)
+            break
+        for _k, _v in (_new or {}).items():
+            # Don't accept syntactically-broken replacements.
+            if _k.endswith(".py"):
+                _vc = validate_code(_v)
+                if any(i.severity == "error" and i.category == "syntax" for i in _vc.issues):
+                    logger.warning("P5: rigor-repaired %s has syntax error, keeping original", _k)
+                    continue
+            files[_k] = _v
+        _rigor = _check_rigor(files, _plan_obj, _manifest)
+
+    if not _rigor.ok:
+        (stage_dir / "RIGOR_VIOLATION.md").write_text(
+            _rigor.as_markdown(), encoding="utf-8"
+        )
+        logger.error(
+            "Stage 10: BLOCKED — academic-rigor violations remain after %d repair(s): %s",
+            _rigor_attempt, _rigor.violations,
+        )
+        return StageResult(
+            stage=Stage.CODE_GENERATION,
+            status=StageStatus.FAILED,
+            artifacts=("RIGOR_VIOLATION.md",),
+            evidence_refs=(),
+        )
 
     # --- Write experiment directory ---
     exp_dir = stage_dir / "experiment"
@@ -1043,10 +1512,11 @@ def _execute_code_generation(
                 repair_prompt,
                 max_tokens=_code_max_tokens,
             )
-            repaired = _extract_multi_file_blocks(repair_resp.content)
-            if repaired and "main.py" in repaired:
-                files = repaired
-                for fname, code in files.items():
+            repaired = _extract_multi_file_blocks(repair_resp.content, assume_main=False)
+            if repaired:
+                # Merge: a partial repair must never drop untouched files
+                files.update(repaired)
+                for fname, code in repaired.items():
                     (exp_dir / fname).write_text(code, encoding="utf-8")
                 # Re-check after repair
                 deep_warnings_after = deep_validate_files(files)
@@ -1179,10 +1649,11 @@ def _execute_code_generation(
                             fix_prompt,
                             max_tokens=_code_max_tokens,
                         )
-                        fixed_files = _extract_multi_file_blocks(fix_resp.content)
-                        if fixed_files and "main.py" in fixed_files:
-                            files = fixed_files
-                            for fname, code in files.items():
+                        fixed_files = _extract_multi_file_blocks(fix_resp.content, assume_main=False)
+                        if fixed_files:
+                            # Merge: a partial fix must never drop untouched files
+                            files.update(fixed_files)
+                            for fname, code in fixed_files.items():
                                 (exp_dir / fname).write_text(code, encoding="utf-8")
                             logger.info(
                                 "Stage 10: Code fixed after review "
@@ -1521,6 +1992,87 @@ Multi-file experiment project with {len(files)} file(s): {file_list}
             evidence_refs=tuple(f"stage-10/{a}" for a in artifacts),
             error=f"Topic-experiment misalignment: {alignment_note}",
         )
+
+    # --- Smoke test: run the generated project tiny (ARC_SMOKE=1) to catch
+    # runtime logic bugs before the multi-hour Stage-12 run. Repair on crash. ---
+    if config.experiment.mode == "docker":
+        _smoke_net = config.experiment.docker.network_policy
+    elif config.experiment.mode == "sandbox":
+        _smoke_net = config.experiment.sandbox.network_policy
+    else:
+        _smoke_net = "none"
+    if (
+        getattr(config.experiment, "smoke_test_enabled", True)
+        and config.experiment.mode in ("sandbox", "docker")
+        and "main.py" in files
+        and _smoke_net != "none"
+    ):
+        _smoke_timeout = getattr(config.experiment, "smoke_test_timeout_sec", 600)
+        _smoke_attempt = 0
+        _MAX_SMOKE_REPAIR = 2
+        _smoke_status, _smoke_detail = _run_smoke_test(exp_dir, config, _smoke_timeout)
+        while _smoke_status == "fail" and llm is not None and _smoke_attempt < _MAX_SMOKE_REPAIR:
+            _smoke_attempt += 1
+            logger.warning(
+                "Stage 10 smoke FAILED (repair %d/%d). Traceback tail:\n%s",
+                _smoke_attempt, _MAX_SMOKE_REPAIR, _smoke_detail,
+            )
+            _ctx = "\n\n".join(
+                f"```filename:{f}\n{c}\n```" for f, c in files.items() if f.endswith(".py")
+            )
+            _user = (
+                "The generated experiment CRASHED at runtime during a smoke test "
+                "(tiny 1-2 sample run). Fix the ROOT CAUSE shown in this traceback "
+                "— do not mask it. Common causes: importing a name that doesn't "
+                "exist, calling a function on the wrong type (NoneType), "
+                "overwriting a parameter, or a framework misconfig. Return the "
+                "COMPLETE corrected file(s), each as a "
+                "```filename:<name>\\n<code>\\n``` block.\n\n"
+                f"TRACEBACK (stderr tail):\n{_smoke_detail}\n\nCurrent files:\n{_ctx}"
+            )
+            try:
+                resp = _chat_with_prompt(
+                    llm,
+                    "You are a careful research engineer fixing a runtime crash. "
+                    "Address the exact exception in the traceback.",
+                    _user,
+                )
+                _fixed = _extract_multi_file_blocks(resp.content, assume_main=False)
+            except Exception:  # noqa: BLE001
+                logger.debug("Smoke repair attempt failed", exc_info=True)
+                break
+            if not _fixed:
+                logger.warning("Smoke repair produced no files; stopping repair")
+                break
+            for _k, _v in _fixed.items():
+                if _k.endswith(".py"):
+                    import ast as _ast2
+                    try:
+                        _ast2.parse(_v)
+                    except SyntaxError:
+                        logger.warning("Smoke-repaired %s has syntax error, keeping original", _k)
+                        continue
+                files[_k] = _v
+                (exp_dir / _k).write_text(_v, encoding="utf-8")
+            _smoke_status, _smoke_detail = _run_smoke_test(exp_dir, config, _smoke_timeout)
+
+        if _smoke_status == "fail":
+            (stage_dir / "SMOKE_FAILED.md").write_text(
+                "# ⛔ Smoke test failed — generated code crashes at runtime\n\n"
+                f"After {_smoke_attempt} repair attempt(s) the tiny ARC_SMOKE run "
+                "still crashes. Fix before the full Stage-12 run.\n\n"
+                "```\n" + _smoke_detail + "\n```\n",
+                encoding="utf-8",
+            )
+            logger.error("Stage 10: BLOCKED — smoke test still crashing after %d repair(s)", _smoke_attempt)
+            return StageResult(
+                stage=Stage.CODE_GENERATION,
+                status=StageStatus.FAILED,
+                artifacts=tuple(artifacts) + ("SMOKE_FAILED.md",),
+                evidence_refs=tuple(f"stage-10/{a}" for a in artifacts) + ("stage-10/SMOKE_FAILED.md",),
+                error="Smoke test crashed: " + _smoke_detail.strip().splitlines()[-1][:200] if _smoke_detail.strip() else "Smoke test crashed",
+            )
+        logger.info("Stage 10 smoke test: %s — %s", _smoke_status, _smoke_detail[:120])
 
     return StageResult(
         stage=Stage.CODE_GENERATION,

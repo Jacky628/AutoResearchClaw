@@ -34,6 +34,8 @@ from researchclaw.pipeline._helpers import (
     _utcnow_iso,
     reconcile_figure_refs,
 )
+from researchclaw.llm import build_panel_llms
+from researchclaw.pipeline.debate import run_debate
 from researchclaw.pipeline.stages import Stage, StageStatus
 from researchclaw.prompts import PromptManager
 
@@ -108,16 +110,27 @@ def _collect_experiment_evidence(run_dir: Path) -> str:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    # 4. Count actual number of experiment runs
+    # 4. Count actual number of experiment runs.  Prefer an explicit total_runs
+    # declared in a run payload (aggregated-summary runs where one JSON file
+    # represents many logical runs); fall back to counting run-*.json files.
     actual_run_count = 0
+    declared_total_runs: int | None = None
     for stage_subdir in sorted(run_dir.glob("stage-*/runs")):
         for rf in stage_subdir.glob("*.json"):
-            if rf.name != "results.json":
-                actual_run_count += 1
-    if actual_run_count > 0:
+            if rf.name == "results.json":
+                continue
+            actual_run_count += 1
+            if declared_total_runs is None:
+                _p = _safe_json_loads(rf.read_text(encoding="utf-8"), {})
+                if isinstance(_p, dict):
+                    _tr = _p.get("total_runs") or _p.get("n_runs")
+                    if isinstance(_tr, int) and _tr > 0:
+                        declared_total_runs = _tr
+    _trial_count = declared_total_runs if declared_total_runs is not None else actual_run_count
+    if _trial_count > 0:
         evidence_parts.append(
             f"### Actual Trial Count\n"
-            f"**The experiment was executed {actual_run_count} time(s).** "
+            f"**The experiment was executed {_trial_count} time(s).** "
             f"If the paper claims a different number of trials, this is a CRITICAL discrepancy."
         )
 
@@ -133,6 +146,54 @@ def _collect_experiment_evidence(run_dir: Path) -> str:
 
 # ---------------------------------------------------------------------------
 # Stage 18: Peer Review
+# P0-3: explicit independence framing prepended to peer-review / quality-gate
+# system prompts. Applied even when the reviewer reuses the generator model, to
+# reduce self-preference; strongest when an independent reviewer model is set.
+_REVIEW_DEBATE_ROLES: dict[str, dict[str, str]] = {
+    "methodology_reviewer": {
+        "system": "You are a peer reviewer focused on METHODOLOGY and experimental design rigor.",
+        "user": ("Review this paper draft for methodological soundness, baselines, ablations, and validity threats.\n\nTopic: {topic}\n\nEvidence:\n{experiment_evidence}\n\nDraft:\n{draft}"),
+    },
+    "domain_reviewer": {
+        "system": "You are a peer reviewer who is a DOMAIN EXPERT judging novelty and significance.",
+        "user": ("Review this paper draft for novelty, related-work positioning, and contribution significance.\n\nTopic: {topic}\n\nDraft:\n{draft}"),
+    },
+    "rigor_reviewer": {
+        "system": "You are a peer reviewer focused on STATISTICS, reproducibility, and claim-evidence consistency.",
+        "user": ("Review this paper draft for statistical rigor, reproducibility, and whether every claim is supported by the evidence. Flag unsupported numbers.\n\nEvidence:\n{experiment_evidence}\n\nDraft:\n{draft}"),
+    },
+}
+
+
+_INDEPENDENT_REVIEWER_PREFIX = (
+    "You are an INDEPENDENT reviewer and judge - a different system from the "
+    "model that authored this paper. Be adversarial and skeptical. Do NOT assume "
+    "the authors' claims, numbers, or conclusions are correct; actively look for "
+    "unsupported claims, overstated results, and methodological flaws.\n\n"
+)
+
+
+def _build_reviewer_or_generator(config, generator_llm):
+    """Return (review_client, author_model, judge_model) for review stages.
+
+    Falls back to the generator client when no independent reviewer is
+    configured, preserving legacy behaviour. author_model / judge_model are
+    recorded into artifacts for auditability.
+    """
+    author_model = ""
+    if generator_llm is not None:
+        author_model = getattr(getattr(generator_llm, "config", None), "primary_model", "") or ""
+    try:
+        from researchclaw.llm import build_reviewer_llm
+        reviewer = build_reviewer_llm(config)
+    except Exception:  # noqa: BLE001
+        reviewer = None
+    if reviewer is not None:
+        judge_model = getattr(getattr(reviewer, "config", None), "primary_model", "") or ""
+        return reviewer, author_model, judge_model
+    return generator_llm, author_model, author_model
+
+
 # ---------------------------------------------------------------------------
 
 def _execute_peer_review(
@@ -163,7 +224,33 @@ def _execute_peer_review(
         except Exception:  # noqa: BLE001
             pass
 
-    if llm is not None:
+    # P0-3: route peer review through an independent reviewer model when
+    # configured; otherwise fall back to the generator (legacy behaviour).
+    _review_llm, _author_model, _judge_model = _build_reviewer_or_generator(config, llm)
+    _panel = build_panel_llms(config)
+    if _panel and _review_llm is not None:
+        # --- Multi-model peer-review debate: distinct models each play an
+        # independent reviewer role (methodology / domain / rigor), rebut each
+        # other, then an independent judge (reviewer_model) synthesizes the
+        # final review report. ---
+        _pm = prompts or PromptManager()
+        _variables = {
+            "topic": config.research.topic,
+            "draft": draft + _quality_suffix,
+            "experiment_evidence": experiment_evidence,
+        }
+        reviews, _ = run_debate(
+            _panel,
+            _review_llm,
+            _REVIEW_DEBATE_ROLES,
+            _variables,
+            rounds=config.llm.debate_rounds,
+            synth_prompt="review_synthesize",
+            out_dir=stage_dir / "debate",
+            prompts=_pm,
+            author_model=_author_model,
+        )
+    elif _review_llm is not None:
         _pm = prompts or PromptManager()
         _overlay = _get_evolution_overlay(run_dir, "peer_review")
         sp = _pm.for_stage(
@@ -177,10 +264,10 @@ def _execute_peer_review(
         # Reviewer persona and rubric are carried natively by the active
         # prompt bank (ML bank -> NeurIPS/ICML referees, HEP bank -> HEP
         # theorist/phenomenologist/experimentalist). No adapter overlay.
-        _review_system = sp.system
+        _review_system = _INDEPENDENT_REVIEWER_PREFIX + sp.system
         _review_user = sp.user + _quality_suffix
         resp = _chat_with_prompt(
-            llm,
+            _review_llm,
             _review_system,
             _review_user,
             json_mode=sp.json_mode,
@@ -200,7 +287,25 @@ def _execute_peer_review(
 - Weaknesses: Discussion underdeveloped.
 - Actionable revisions: Expand limitations and broader impact.
 """
-    (stage_dir / "reviews.md").write_text(reviews, encoding="utf-8")
+    # P0-3: record review provenance (author vs judge model).
+    _independent = bool(_judge_model and _judge_model != _author_model)
+    _prov_header = (
+        f"<!-- review_provenance: author_model={_author_model or 'unknown'} "
+        f"judge_model={_judge_model or _author_model or 'unknown'} "
+        f"independent={'yes' if _independent else 'no'} -->\n"
+    )
+    (stage_dir / "reviews.md").write_text(_prov_header + reviews, encoding="utf-8")
+    (stage_dir / "review_provenance.json").write_text(
+        json.dumps(
+            {
+                "author_model": _author_model,
+                "judge_model": _judge_model or _author_model,
+                "independent_reviewer": _independent,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return StageResult(
         stage=Stage.PEER_REVIEW,
         status=StageStatus.DONE,
@@ -285,6 +390,49 @@ def _execute_paper_revision(
         # prompt bank; no adapter overlay.
         _revision_system = sp.system
         _revision_user = sp.user
+        # Content-preservation guard (GENERAL — independent of topic/paper): a revision must
+        # not silently DROP a section/experiment that the draft contains while keeping the
+        # overall word count up (the failure mode the whole-paper word-count guard misses).
+        # We fingerprint the draft STRUCTURALLY — section headings + distinctive numeric
+        # results — and require both to survive; this catches a dropped experiment in ANY paper,
+        # not one hard-coded set of ablations.
+        def _headings(t):
+            return re.findall(r"(?m)^#{1,4}\s+(.+?)\s*$", t)
+
+        def _htoks(h):
+            # drop pure-digit tokens so section RENUMBERING ("3.1 Problem Formulation" ->
+            # "Problem Formulation") is not mistaken for a dropped section
+            return {t for t in re.sub(r"[^a-z0-9 ]+", " ", h.lower()).split() if not t.isdigit()}
+
+        # guard every draft section heading except the paper title (first heading)
+        _guard_headings = [h.strip() for h in _headings(draft)[1:] if len(h.strip()) > 3]
+        # distinctive numeric fingerprints: decimals (0.359), sci-notation p-values (5e-23)
+        _draft_numbers = set(re.findall(r"\d+\.\d{2,}|\d+e-?\d+", draft.lower()))
+
+        def _content_loss(text):
+            """(dropped_headings, numeric_survival_fraction) vs draft — both topic-agnostic
+            signals that a revision deleted a whole section/experiment."""
+            low = text.lower()
+            rev_head_toks = [_htoks(h) for h in _headings(text)]
+            dropped = []
+            for h in _guard_headings:
+                ht = _htoks(h)
+                # preserved iff SOME revised heading shares >=60% of this heading's tokens
+                # (tolerates minor renames; catches true drops regardless of common words)
+                if ht and not any(r and len(ht & r) / len(ht) >= 0.6 for r in rev_head_toks):
+                    dropped.append(h)
+            num_survival = (sum(1 for n in _draft_numbers if n in low) / len(_draft_numbers)
+                            if _draft_numbers else 1.0)
+            return dropped, num_survival
+
+        _revision_user = (
+            "CONTENT PRESERVATION (MANDATORY): the revision MUST retain EVERY section, "
+            "experiment, ablation, table, figure and numeric result that appears in the draft. "
+            "Do NOT delete, merge away, or rename out any section or results/experiment "
+            "subsection, and do NOT drop any reported number. Revision = address reviewer "
+            "comments and improve clarity while keeping ALL empirical content and ALL section "
+            "headings; copy any section without reviewer comments through UNCHANGED.\n\n"
+        ) + _revision_user
         # R10-Fix2: Ensure max_tokens is sufficient for full paper revision
         revision_max_tokens = sp.max_tokens
         if revision_max_tokens and draft_word_count > 0:
@@ -309,21 +457,25 @@ def _execute_paper_revision(
         )
         revised = resp.content
         revised_word_count = len(revised.split())
-        # Length guard: if revision is shorter than 80% of draft, retry once
-        if draft_word_count > 500 and revised_word_count < int(draft_word_count * 0.8):
+        _dropped, _num_keep = _content_loss(revised)
+        _too_short = draft_word_count > 500 and revised_word_count < int(draft_word_count * 0.8)
+        _lost_numbers = bool(_draft_numbers) and _num_keep < 0.8
+        # Retry if the revision lost length, dropped sections, or lost reported numbers — the
+        # general signature of a revision that silently deleted a whole experiment/section.
+        if _too_short or _dropped or _lost_numbers:
             logger.warning(
-                "Paper revision (%d words) is shorter than draft (%d words). "
-                "Retrying with stronger length enforcement.",
-                revised_word_count,
-                draft_word_count,
+                "Paper revision needs retry: %d/%d words; dropped=%s; numeric_survival=%.2f",
+                revised_word_count, draft_word_count, _dropped, _num_keep,
             )
             retry_user = (
-                f"CRITICAL LENGTH REQUIREMENT: The draft is {draft_word_count} words. "
-                f"Your revision MUST be at least {draft_word_count} words — ideally longer. "
-                f"Do NOT summarize or condense ANY section. Copy each section verbatim "
-                f"and ONLY make targeted improvements to address reviewer comments. "
-                f"If a section has no reviewer comments, include it UNCHANGED.\n\n"
-                + _revision_user
+                f"CRITICAL REQUIREMENTS: The draft is {draft_word_count} words. Your revision "
+                f"MUST be at least {draft_word_count} words AND MUST contain EVERY section, "
+                f"experiment, and reported number from the draft. Copy each section verbatim and "
+                f"ONLY make targeted edits to address reviewer comments; include any section "
+                f"without reviewer comments UNCHANGED.\n"
+                + (f"You DROPPED these draft sections — RESTORE them verbatim: {_dropped}\n" if _dropped else "")
+                + (f"You DROPPED reported results (only {_num_keep:.0%} of draft numbers survived) — restore all experiments and their numbers.\n" if _lost_numbers else "")
+                + "\n" + _revision_user
             )
             resp2 = _chat_with_prompt(
                 llm, _revision_system, retry_user,
@@ -331,33 +483,27 @@ def _execute_paper_revision(
             )
             revised2 = resp2.content
             revised2_word_count = len(revised2.split())
-            if revised2_word_count >= int(draft_word_count * 0.8):
+            _dropped2, _num_keep2 = _content_loss(revised2)
+            _ok2 = (not _dropped2
+                    and revised2_word_count >= int(draft_word_count * 0.8)
+                    and (not _draft_numbers or _num_keep2 >= 0.8))
+            if _ok2:
                 revised = revised2
-            elif revised2_word_count > revised_word_count:
-                # Retry improved but still not enough — use the longer version
-                revised = revised2
-                logger.warning(
-                    "Retry improved (%d → %d words) but still shorter than draft (%d).",
-                    revised_word_count,
-                    revised2_word_count,
-                    draft_word_count,
-                )
             else:
-                # Both attempts produced short output — preserve full original draft
+                # Revision still lost content → preserve the COMPLETE draft, which contains
+                # every section/experiment and all reported numbers. A complete draft beats a
+                # revision that silently deleted a result.
                 logger.warning(
-                    "Retry also produced short output (%d words). "
-                    "Falling back to FULL ORIGINAL DRAFT to prevent content loss.",
-                    revised2_word_count,
+                    "Revision retry still lost content (dropped=%s, words=%d, numeric_survival=%.2f) "
+                    "— falling back to FULL DRAFT to preserve all experiments.",
+                    _dropped2, revised2_word_count, _num_keep2,
                 )
-                # Extract useful revision points as appendix
-                revision_words = revised.split()
+                revision_words = revised2.split()
                 revision_summary = (
                     " ".join(revision_words[:500]) + "\n\n*(Revision summary truncated)*"
-                    if len(revision_words) > 500
-                    else revised
+                    if len(revision_words) > 500 else revised2
                 )
                 if revision_summary.strip():
-                    # Save revision notes to internal file, not paper body
                     (stage_dir / "revision_notes_internal.md").write_text(
                         revision_summary, encoding="utf-8"
                     )
@@ -388,6 +534,9 @@ def _execute_quality_gate(
 ) -> StageResult:
     revised = _read_prior_artifact(run_dir, "paper_revised.md") or ""
     report: dict[str, Any] | None = None
+    # P0-3: judge with an independent model when configured (author writes,
+    # independent model judges). Falls back to the generator otherwise.
+    _judge_llm, _author_model, _judge_model = _build_reviewer_or_generator(config, llm)
 
     # BUG-25 + BUG-180: Load the RICHEST experiment summary for cross-checking.
     # _read_prior_artifact returns the first match in reverse-sorted order,
@@ -444,9 +593,14 @@ def _execute_quality_gate(
 
     if llm is not None:
         _pm = prompts or PromptManager()
-        # IMP-33: Evaluate the full paper instead of truncating to 12K chars.
-        # Split into chunks if very long, but prefer sending the full text.
-        paper_for_eval = revised[:40000] if len(revised) > 40000 else revised
+        # IMP-33 / BUG-fix: Evaluate the FULL paper. A 40K-char cap silently dropped the
+        # Limitations+Conclusion of papers >40K chars (e.g. a 45.7K-char draft), so the judge
+        # reported "Discussion truncated / no conclusion" and scored it down. 200K chars
+        # (~50K tokens) fits the gpt-5.4 reviewer context with large headroom and covers any
+        # realistic workshop paper; the cap is now only a runaway-input safety bound.
+        if len(revised) > 200000:
+            logger.warning("Stage 20: paper %d chars exceeds 200K eval cap — truncating for judge", len(revised))
+        paper_for_eval = revised[:200000] if len(revised) > 200000 else revised
 
         # BUG-25: Inject experiment status into quality gate prompt
         _exp_context = ""
@@ -482,15 +636,26 @@ def _execute_quality_gate(
             revised=paper_for_eval + _exp_context,
         )
         resp = _chat_with_prompt(
-            llm,
-            sp.system,
+            _judge_llm or llm,
+            _INDEPENDENT_REVIEWER_PREFIX + sp.system,
             sp.user,
             json_mode=sp.json_mode,
-            max_tokens=sp.max_tokens,
+            max_tokens=sp.max_tokens or 6000,
         )
         parsed = _safe_json_loads(resp.content, {})
-        if isinstance(parsed, dict):
+        if isinstance(parsed, dict) and parsed:
             report = parsed
+        else:
+            # Empty {} → the json_mode response did not parse (commonly a
+            # truncated, unclosed ```json fence). {} is a dict so the
+            # `report is None` guard below would NOT fire — handle it here so we
+            # fall back to the default report and surface the truncation.
+            logger.warning(
+                "Stage 20: quality_gate produced no parseable JSON object "
+                "(likely a truncated json_mode response, resp len=%d) — falling "
+                "back to the default quality report.",
+                len(resp.content or ""),
+            )
     # BUG-25: If experiment failed with no metrics, cap the quality score
     if report is not None and _exp_failed:
         _orig_score = report.get("score_1_to_10", 5)
@@ -507,6 +672,11 @@ def _execute_quality_gate(
     if report is None:
         report = _default_quality_report(config.research.quality_threshold)
     report.setdefault("generated", _utcnow_iso())
+    # P0-3: record judge provenance so reviewers can see if the gate was
+    # independent of the authoring model.
+    report["author_model"] = _author_model
+    report["judge_model"] = _judge_model or _author_model
+    report["independent_judge"] = bool(_judge_model and _judge_model != _author_model)
     (stage_dir / "quality_report.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"
     )
@@ -1436,7 +1606,10 @@ def _execute_export_publish(
     try:
         from researchclaw.domains.detector import detect_domain as _detect_domain_adv
         from researchclaw.domains.prompt_adapter import get_adapter as _get_prompt_adapter
-        _ex_domain = _detect_domain_adv(topic=config.research.topic)
+        _ex_domain = _detect_domain_adv(
+            topic=config.research.topic,
+            configured_domains=config.research.domains,
+        )
         _ex_adapter = _get_prompt_adapter(_ex_domain)
         _ex_blocks = _ex_adapter.get_export_publish_blocks({"topic": config.research.topic})
         _export_preferred_template = _ex_blocks.preferred_template or ""
@@ -2521,6 +2694,44 @@ def _execute_export_publish(
                 "Stage 22: Packaged single-file code release with %d deps",
                 len(requirements),
             )
+
+    # Fallback: if no experiment_final/{.py} artifact was produced, the code/
+    # output contract would FAIL Stage 22 (-> Stage 23 skipped).  Recover the
+    # generated experiment source from the most recent stage that has it so the
+    # deliverable always carries runnable code.
+    if "code/" not in artifacts:
+        _fallback_py: list[Path] = []
+        for _patt in (
+            "stage-*/experiment_final/*.py",
+            "stage-*/experiment/*.py",
+            "stage-*/runs/_project_*/*.py",
+        ):
+            _cands = sorted(run_dir.glob(_patt), reverse=True)
+            if _cands:
+                _fallback_py = sorted(_cands[0].parent.glob("*.py"))
+                break
+        if _fallback_py:
+            code_dir = stage_dir / "code"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            for src in _fallback_py:
+                (code_dir / src.name).write_bytes(src.read_bytes())
+            try:
+                _src_rel = _fallback_py[0].parent.relative_to(run_dir)
+            except ValueError:
+                _src_rel = _fallback_py[0].parent
+            (code_dir / "README.md").write_text(
+                f"# Code Package\n\nExperiment source recovered from `{_src_rel}`.\n\n"
+                "## How to Run\n`python main.py`\n",
+                encoding="utf-8",
+            )
+            artifacts.append("code/")
+            logger.info(
+                "Stage 22: Packaged %d code file(s) via fallback from %s",
+                len(_fallback_py), _src_rel,
+            )
+        else:
+            logger.warning("Stage 22: No experiment code found to package into code/")
+
     # WS-5.5: Generate framework diagram prompt for methodology section
     try:
         _framework_prompt = _generate_framework_diagram_prompt(
@@ -2638,9 +2849,31 @@ def _remove_citations_from_text(text: str, keys_to_remove: set[str]) -> str:
 
     text = re.sub(r"\\cite\{([^}]+)\}", _filter_cite, text)
 
-    # Markdown: [key]
-    for key in keys_to_remove:
-        text = re.sub(rf"\[{re.escape(key)}\]", "", text)
+    # Markdown: [key] — also handle multi-key brackets so we don't leave
+    # orphan commas or semicolons behind.
+    _cite_key_pat = r"[a-zA-Z]+\d{4}[a-zA-Z0-9_-]*"
+
+    def _filter_md_bracket(m: re.Match[str]) -> str:
+        parts = [p.strip() for p in re.split(r"[,;]\s*", m.group(1))]
+        if not all(re.fullmatch(_cite_key_pat, p) for p in parts if p):
+            return m.group(0)
+        kept = [p for p in parts if p and p not in keys_to_remove]
+        if not kept:
+            return ""
+        return "[" + ", ".join(kept) + "]"
+
+    text = re.sub(
+        rf"\[({_cite_key_pat}(?:\s*[,;]\s*{_cite_key_pat})*)\]",
+        _filter_md_bracket,
+        text,
+    )
+
+    # Clean up whitespace artifacts left by removed cites — matches the
+    # cleanup runner.py does for paper.tex so paper_final.md stays clean.
+    text = re.sub(r" {2,}", " ", text)
+    text = re.sub(r" ([.,;:)])", r"\1", text)
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\[\s*\]", "", text)
     return text
 
 

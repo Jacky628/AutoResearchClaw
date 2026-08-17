@@ -146,6 +146,44 @@ researchclaw run --config config.arc.yaml --topic "Your research idea" --auto-ap
 Output → `artifacts/rc-YYYYMMDD-HHMMSS-<hash>/deliverables/` — compile-ready LaTeX, BibTeX, experiment code, charts.
 
 <details>
+<summary>🐍 Using conda instead of venv</summary>
+
+All dependencies are standard PyPI packages, so conda works as a drop-in replacement for the virtual environment step:
+
+```bash
+# 1. Create and activate environment (Python 3.11+ required)
+conda create -n researchclaw python=3.11 -y
+conda activate researchclaw
+
+# (Optional) Install numpy/matplotlib/scipy via conda for faster builds
+conda install numpy matplotlib scipy -y
+
+# 2. Install the project in editable mode with all optional deps
+pip install -e ".[all,dev]"
+
+# 3. Verify
+researchclaw doctor
+```
+
+If you need GPU support (PyTorch), install it via conda before `pip install`:
+
+```bash
+# Adjust pytorch-cuda version to match your CUDA installation
+conda install pytorch torchvision pytorch-cuda=12.1 -c pytorch -c nvidia -y
+```
+
+When editing `config.arc.yaml`, set `experiment.sandbox.python_path` to the conda env's Python:
+
+```yaml
+experiment:
+  sandbox:
+    python_path: "/path/to/conda/envs/researchclaw/bin/python"
+    # Find it with: conda run -n researchclaw which python
+```
+
+</details>
+
+<details>
 <summary>📝 Minimum required config</summary>
 
 ```yaml

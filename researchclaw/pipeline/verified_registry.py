@@ -229,6 +229,23 @@ class VerifiedRegistry:
                         reg.add_value(rel, f"rel_improve({c1.name} vs {c2.name})")
                         reg.add_value(abs(rel), f"|rel_improve({c1.name},{c2.name})|")
 
+        # --- 6b. Extract ablation_results (externally-computed studies: content/prefix/
+        # dropout ablations, metric audits, paired-test stats). These run outside the main
+        # condition loop, so without this every ablation number (p-values, W-stats, per-arm
+        # F1s) is flagged as fabricated and stripped to "---" in the exported paper. ---
+        def _collect_ablation(obj: object, depth: int = 0) -> None:
+            if depth > 12 or isinstance(obj, bool):
+                return
+            if isinstance(obj, (int, float)) and _is_finite(float(obj)):
+                reg.add_value(float(obj), "ablation_results")
+            elif isinstance(obj, dict):
+                for v in obj.values():
+                    _collect_ablation(v, depth + 1)
+            elif isinstance(obj, (list, tuple)):
+                for v in obj:
+                    _collect_ablation(v, depth + 1)
+        _collect_ablation(experiment_summary.get("ablation_results", {}))
+
         # --- 7. Enrich from refinement_log (best iteration only) ---
         if refinement_log:
             _enrich_from_refinement_log(reg, refinement_log)

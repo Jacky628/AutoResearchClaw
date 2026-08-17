@@ -228,6 +228,18 @@ def _sanitize_latex_output(
         tex,
     )
 
+    # 4c. Remove orphan caption paragraphs.  The draft sometimes emits BOTH a
+    #     float (often a passed-through LaTeX table/figure that carries its own
+    #     \caption) AND a separate "**Table N.** ..."/"**Figure N.** ..." body
+    #     paragraph.  The standalone paragraph is a duplicate caption that would
+    #     otherwise render twice, so drop it.  (Markdown tables whose caption is
+    #     on the immediately-preceding line already had it folded into the float.)
+    tex = re.sub(
+        r"(?m)^\\textbf\{(?:Table|Figure)\s+\d+[.:][^}]*\}.*(?:\n)?",
+        "",
+        tex,
+    )
+
     # 4b. Auto-map orphan \ref{fig:X} to closest \label{fig:Y} by prefix.
     #     The converter generates long labels from captions (fig:overall_cifar_100)
     #     but the LLM references short names (fig:overall).
@@ -280,6 +292,27 @@ def _sanitize_latex_output(
     # 8. Remove consecutive blank lines (more than 2)
     tex = re.sub(r"\n{3,}", "\n\n", tex)
 
+    # 9. Close out Markdown footnotes: the sentinels planted by
+    #    _resolve_markdown_footnotes have carried their bodies through inline
+    #    conversion and escaping, so they can now become real \footnote{}.
+    tex = re.sub(
+        re.escape(_FN_OPEN) + r"(.*?)" + re.escape(_FN_CLOSE),
+        lambda m: "\\footnote{" + _footnote_body(m.group(1)) + "}",
+        tex,
+        flags=re.DOTALL,
+    )
+    # A sentinel with no partner means an intervening stage split the pair.
+    # Printing "XFOOTNOTEOPENX" into the paper is the one outcome worse than
+    # losing the note, so drop the marker and say so.
+    if _FN_OPEN in tex or _FN_CLOSE in tex:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Markdown footnote sentinels survived conversion (the pair was "
+            "split by an intervening stage); dropping the markers"
+        )
+        tex = tex.replace(_FN_OPEN, "").replace(_FN_CLOSE, "")
+
     return tex
 
 
@@ -329,6 +362,150 @@ def _round_raw_metrics(text: str) -> str:
         except (ValueError, OverflowError):
             return m.group(0)
     return _RAW_METRIC_RE.sub(_rounder, text)
+
+
+# Sentinels for footnote bodies: plain letters, so they pass through inline
+# conversion, LaTeX escaping and the Unicode stripper untouched.
+_FN_OPEN = "XFOOTNOTEOPENX"
+_FN_CLOSE = "XFOOTNOTECLOSEX"
+
+# A definition is the rest of its own line plus any *indented* continuation
+# lines — the Pandoc rule.  Matching the body with DOTALL up to the next blank
+# line instead would, whenever a definition is not followed by a blank line,
+# swallow the block after it (a heading, a paragraph, a list, a table) into the
+# footnote and delete it from the paper, with no error at any later stage.
+_FOOTNOTE_DEF_RE = re.compile(
+    r"^[ \t]{0,3}\[\^([A-Za-z0-9_.-]+)\]:[ \t]*([^\n]*(?:\n[ \t]+\S[^\n]*)*)\n?",
+    re.MULTILINE,
+)
+_FOOTNOTE_REF_RE = re.compile(r"\[\^([A-Za-z0-9_.-]+)\]")
+# Odd-numbered pieces of this split are fenced code blocks, where Markdown
+# markup is content and must not be interpreted.
+_FENCE_SPLIT_RE = re.compile(
+    r"(^[ \t]*```[^\n]*\n.*?^[ \t]*```[ \t]*$)", re.MULTILINE | re.DOTALL
+)
+# Positions LaTeX will not accept a \footnote in: it is illegal inside
+# \caption{}, it tears \section{} apart and corrupts the \label slug derived
+# from the heading text, and a table cell puts the note inside a float where it
+# is never printed.
+_FN_UNSAFE_LINE_RE = re.compile(r"^(?:[ \t]{0,3}#{1,6}\s|[ \t]*\||[ \t]*!\[)")
+
+
+def _footnote_body(body: str) -> str:
+    """Make a converted footnote body safe as the argument of ``\\footnote{}``.
+
+    A body ending in a backslash would turn the closing brace into an escaped
+    ``\\}`` and run the argument away to the end of the file, so trailing
+    backslashes go.  Unbalanced braces cannot be repaired without guessing at
+    the author's markup, so they are reported instead.
+    """
+    body = body.strip().rstrip("\\")
+    if body.count("{") != body.count("}"):
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Markdown footnote body has unbalanced braces and will not "
+            "compile: %s", body[:120],
+        )
+    return body
+
+
+def _resolve_markdown_footnotes(text: str) -> str:
+    """Inline Markdown footnotes (``[^id]`` plus a ``[^id]: body`` definition).
+
+    Without this the definition line survives as a literal paragraph and the
+    reference as ``[\\textasciicircum{}id]``.  The body is lifted to the
+    reference site between sentinels; ``_sanitize_latex_output`` turns the
+    sentinel pair into ``\\footnote{}`` once the body has been converted along
+    with its surrounding prose.
+
+    Three cases are deliberately left as the author wrote them, each with a
+    warning, because rendering them would produce broken LaTeX or lose text:
+    a reference in a heading, table row or figure caption (LaTeX takes no
+    footnote there); a reference with no matching definition; and anything
+    inside a fenced code block.  An unreferenced definition is likewise kept
+    rather than deleted: standard Markdown drops it, but losing author text
+    silently is the failure this module is least willing to have.
+
+    Known limitation: an id referenced more than once produces that many
+    separate footnotes rather than one shared number, so repeats are warned
+    about too.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    pieces = _FENCE_SPLIT_RE.split(text)
+    prose = range(0, len(pieces), 2)
+
+    definitions: dict[str, str] = {}
+    for i in prose:
+        for match in _FOOTNOTE_DEF_RE.finditer(pieces[i]):
+            definitions[match.group(1)] = " ".join(match.group(2).split())
+    if not definitions:
+        return text
+
+    # Classify every reference before touching anything: an id with even one
+    # reference in a position LaTeX cannot take keeps both its markers and its
+    # definition, so the author sees raw Markdown rather than losing the note.
+    counts: dict[str, int] = {}
+    blocked: set[str] = set()
+    for i in prose:
+        for line in _FOOTNOTE_DEF_RE.sub("", pieces[i]).split("\n"):
+            for match in _FOOTNOTE_REF_RE.finditer(line):
+                name = match.group(1)
+                counts[name] = counts.get(name, 0) + 1
+                if _FN_UNSAFE_LINE_RE.match(line):
+                    blocked.add(name)
+
+    for name in sorted(blocked):
+        logger.warning(
+            "Markdown footnote [^%s] is referenced in a heading, table row or "
+            "figure caption; LaTeX accepts no footnote there, so it is left "
+            "unrendered — move the reference into body prose",
+            name,
+        )
+    for name in sorted(set(counts) - set(definitions)):
+        logger.warning(
+            "Markdown footnote [^%s] is referenced but never defined; the "
+            "reference is left as written",
+            name,
+        )
+    for name in sorted(set(definitions) - set(counts)):
+        logger.warning(
+            "Markdown footnote [^%s] is defined but never referenced; the "
+            "definition is left as written rather than deleted",
+            name,
+        )
+    for name in sorted(n for n, c in counts.items() if c > 1 and n not in blocked):
+        logger.warning(
+            "Markdown footnote [^%s] is referenced %d times; each reference "
+            "becomes its own numbered footnote",
+            name,
+            counts[name],
+        )
+
+    resolvable = {
+        name: body
+        for name, body in definitions.items()
+        if name not in blocked and name in counts
+    }
+
+    def _inline(match: re.Match[str]) -> str:
+        body = resolvable.get(match.group(1))
+        if body is None:
+            return match.group(0)
+        return f"{_FN_OPEN}{body}{_FN_CLOSE}"
+
+    def _drop_definition(match: re.Match[str]) -> str:
+        return "" if match.group(1) in resolvable else match.group(0)
+
+    for i in prose:
+        piece = _FOOTNOTE_DEF_RE.sub(_drop_definition, pieces[i])
+        pieces[i] = "\n".join(
+            line if _FN_UNSAFE_LINE_RE.match(line) else _FOOTNOTE_REF_RE.sub(_inline, line)
+            for line in piece.split("\n")
+        )
+    return "".join(pieces)
 
 
 def _preprocess_markdown(md: str) -> str:
@@ -405,6 +582,9 @@ def _preprocess_markdown(md: str) -> str:
 
     # 2e. Clean NOT_IN_BIB citation markers: [?key:NOT_IN_BIB] → remove
     text = re.sub(r"\[\?[a-zA-Z0-9_:-]+:NOT_IN_BIB\]", "", text)
+
+    # 2f. Resolve Markdown footnotes ([^id] + [^id]: body) into sentinels.
+    text = _resolve_markdown_footnotes(text)
 
     # 3. Convert blockquotes: > text → \begin{quote}text\end{quote}
     #    Collect consecutive > lines into a single quote block.
@@ -843,8 +1023,12 @@ def _build_body(sections: list[_Section], *, title: str = "") -> str:
         cmd = _level_map.get(effective_level, "paragraph")
         heading_tex = _escape_latex(sec.heading)
         # Strip leading manual section numbers: "1. Introduction" → "Introduction"
-        # Handles: "1 Intro", "2.1 Related", "3.2.1 Details", "1. Intro"
-        heading_tex = re.sub(r"^\d+(?:\.\d+)*\.?\s+", "", heading_tex)
+        # Handles: "1 Intro", "2.1 Related", "3.2.1 Details", "1. Intro", and the
+        # letter-prefixed form appendix subsections carry, "A.8 What the manifest
+        # covers" — LaTeX numbers the heading itself, so leaving the author's
+        # number in the title text prints it twice ("A.8  A.8 What the ...").
+        # A bare letter is not stripped: "A Study of ..." is a title, not a number.
+        heading_tex = re.sub(r"^(?:[A-Z]\.)?\d+(?:\.\d+)*\.?\s+", "", heading_tex)
         parts.append(f"\\{cmd}{{{heading_tex}}}")
         # Generate a label for cross-referencing
         if cmd in ("section", "subsection", "subsubsection"):
@@ -1019,21 +1203,30 @@ def _convert_block(text: str) -> str:
             and i + 1 < len(lines)
             and _TABLE_SEP_RE.match(lines[i + 1].strip())
         ):
-            # Check if previous line is a table caption (e.g. **Table 1: ...**)
+            # Check if a preceding line is a table caption (e.g. **Table 1: ...**).
+            # Scan back past blank lines so a caption separated from the table by
+            # an empty line is still folded in (not left as a duplicate paragraph).
             table_caption = ""
-            if output:
-                prev = output[-1].strip()
+            _cap_j = len(output) - 1
+            while _cap_j >= 0 and output[_cap_j].strip() == "":
+                _cap_j -= 1
+            if _cap_j >= 0:
+                prev = output[_cap_j].strip()
                 # Match bold caption: \textbf{Table N...} (already converted)
                 # or raw markdown: **Table N: ...**
                 cap_m = re.match(
-                    r"(?:\\textbf\{|[*]{2})\s*Table\s+\d+[.:]?\s*(.*?)(?:\}|[*]{2})$",
+                    r"(?:\\textbf\{|[*]{2})\s*Table\s+\d+\s*[.:]?\s*(.*)$",
                     prev,
                 )
                 if cap_m:
-                    table_caption = f"Table {cap_m.group(1)}" if cap_m.group(1) else ""
-                    if not table_caption:
-                        table_caption = prev
-                    output.pop()  # Remove caption line from output (now inside table)
+                    # Keep the FULL description whether it sits inside the bold
+                    # span ("**Table N: desc**") or after it ("**Table N.** desc"),
+                    # instead of dropping it and falling back to an auto-caption.
+                    desc = cap_m.group(1).strip()
+                    desc = re.sub(r"^\}\s*", "", desc)               # "} desc" -> "desc"
+                    desc = re.sub(r"\s*(?:\}|[*]{2})\s*$", "", desc)  # trailing } or **
+                    table_caption = desc
+                    del output[_cap_j:]  # remove caption (+ trailing blanks); folded into float
             table_lines, i = _collect_table(lines, i)
             output.append(_render_table(table_lines, caption=table_caption))
             continue
@@ -1109,6 +1302,69 @@ def _collect_table(lines: list[str], start: int) -> tuple[list[str], int]:
     return table, i
 
 
+_ATOMIC_RE = re.compile(r"\$[^$]*\$|`[^`]*`|\S+")
+_TEX_CMD_RE = re.compile(r"\\[a-zA-Z]+\s*")
+
+
+# Compound labels like CIRCLE+NGON+THIN and paths like a_b/c are single
+# unbreakable words to TeX, so one of them in a column forces the whole table
+# wider than the text width. These separators become break opportunities.
+_CELL_BREAK_RE = re.compile(r"(?<=[+/_])(?=[A-Za-z0-9])")
+
+
+def _cell_breakable(cell: str) -> str:
+    """Allow long compound words in a table cell to break after + / or _."""
+    def _one(word: str) -> str:
+        if len(word) <= TABLE_MIN_WRAP_CHARS or "$" in word or "\\" in word:
+            return word
+        return _CELL_BREAK_RE.sub(lambda _: "\\discretionary{}{}{}", word)
+
+    return " ".join(_one(w) for w in cell.split(" "))
+
+
+def _visual_len(cell: str) -> int:
+    """Roughly how many glyphs *cell* sets, as opposed to how long its source is.
+
+    Column widths were being estimated with ``len()``, which counts markup:
+    ``$5.9\\times10^{-7}$`` is eighteen source characters and about nine glyphs.
+    Numeric columns therefore looked far too wide to wrap and were left to
+    stretch the table until it had to be shrunk to fit.
+    """
+    s = _TEX_CMD_RE.sub(lambda m: "x" if m.group(0).startswith("\\times") else "", cell)
+    return len(s.replace("$", "").replace("{", "").replace("}", "").replace("\\", ""))
+
+
+def _longest_unbreakable(cells: list[str]) -> int:
+    """Length of the longest run in *cells* that cannot be broken across lines.
+
+    Giving a column a wrapping X width only helps if its content can actually
+    break inside that width. A cell of maths — ``6.1\\times10^{-14} / 8.5...`` —
+    cannot, so it overruns whatever width tabularx allots and the row sticks out
+    past the margin instead.
+    """
+    longest = 0
+    for cell in cells:
+        for tok in _ATOMIC_RE.findall(cell):
+            # measured on the whole token: _cell_breakable will offer breaks at
+            # + / and _, but those are opportunities, not guarantees, and sizing
+            # the column as though every one of them is taken overflows the row
+            longest = max(longest, _visual_len(tok))
+    return longest
+
+
+# One size for every table in a document. \small sits just below body text,
+# which is the conventional relationship and leaves tables legible.
+TABLE_FONT = "\\small"
+# A column is prose rather than a label or a number when it is wider than its
+# fair share of the line, and prose wraps instead of stretching the table. The
+# floor keeps short-column tables from wrapping headings they have room for.
+TABLE_MIN_WRAP_CHARS = 12
+# Roughly how many characters of table body fit on one text width at TABLE_FONT.
+# Used both to size the fair share and to decide when the non-wrapping columns
+# have already filled the line, leaving tabularx nothing to distribute.
+TABLE_LINE_BUDGET_CHARS = 72
+
+
 def _render_table(table_lines: list[str], caption: str = "") -> str:
     """Render a Markdown table as a LaTeX tabular inside a table environment.
 
@@ -1131,12 +1387,47 @@ def _render_table(table_lines: list[str], caption: str = "") -> str:
 
     table_num = _next_table_num()
 
-    # IMP-23: Detect wide tables that need resizebox
-    max_cell_len = max(
-        (len(c) for row in [header] + body_rows for c in row),
-        default=0,
-    )
-    needs_resize = ncols > 5 or max_cell_len > 25
+    # Uniform table typography.
+    #
+    # The previous behaviour wrapped wide tables in \resizebox{\columnwidth}{!},
+    # which scales a table to *exactly* fill the text width. The scale factor is
+    # then columnwidth/natural-width, so it differs per table: across one paper's
+    # fifteen tables the effective body size ran from 5.8pt to 10.8pt, narrow
+    # tables magnified above the surrounding prose and wide ones shrunk below
+    # legibility. Instead every table is set at one size; a column whose cells
+    # are long prose wraps (via tabularx) rather than stretching the table; and a
+    # table that is still too wide is shrunk but never magnified.
+    def rows_of_col(i: int) -> list[str]:
+        return [row[i] for row in [header] + body_rows if i < len(row)]
+
+    col_max = [max((_visual_len(c) for c in rows_of_col(i)), default=0)
+               for i in range(ncols)]
+    # A column wraps when it is wider than its fair share of the line. A fixed
+    # character threshold does not work across table shapes: 16 characters is a
+    # short label in a three-column table and half the line in a nine-column one.
+    fair_share = max(TABLE_MIN_WRAP_CHARS, TABLE_LINE_BUDGET_CHARS // max(ncols, 1))
+    wrap_cols = [
+        i
+        for i, w in enumerate(col_max)
+        if w > fair_share and _longest_unbreakable(rows_of_col(i)) <= fair_share
+    ]
+    # tabularx only helps if the columns that keep their natural width leave room
+    # for the X ones to live in. On a table of many numeric columns they do not,
+    # and tabularx hands X a near-zero width and lets every row overflow instead.
+    fixed_chars = sum(w for i, w in enumerate(col_max) if i not in wrap_cols)
+    if fixed_chars + 2 * ncols > TABLE_LINE_BUDGET_CHARS:
+        wrap_cols = []
+    if wrap_cols:
+        # tabularx sizes the table to \columnwidth exactly, letting the X columns
+        # absorb the slack, so no scaling is needed at all.
+        spec = "".join("X" if i in wrap_cols else a for i, a in enumerate(alignments))
+        env_begin = f"\\begin{{tabularx}}{{\\columnwidth}}{{{spec}}}"
+        env_end = "\\end{tabularx}"
+        needs_resize = False
+    else:
+        env_begin = f"\\begin{{tabular}}{{{col_spec}}}"
+        env_end = "\\end{tabular}"
+        needs_resize = ncols > 5 or max(col_max, default=0) > 25
 
     lines_out: list[str] = []
     lines_out.append("\\begin{table}[ht]")
@@ -1155,12 +1446,14 @@ def _render_table(table_lines: list[str], caption: str = "") -> str:
         lines_out.append(f"\\caption{{{auto_cap}}}")
     lines_out.append(f"\\label{{tab:{table_num}}}")
 
+    lines_out.append(TABLE_FONT)
     if needs_resize:
-        # BUG-109b fix: Use \columnwidth (works in both 1-col and 2-col layouts)
-        # \textwidth in 2-column formats (ICML) is full page width, causing
-        # floats wider than a column to be "lost" by LaTeX.
-        lines_out.append("\\resizebox{\\columnwidth}{!}{%")
-    lines_out.append(f"\\begin{{tabular}}{{{col_spec}}}")
+        # max width shrinks an over-wide table but leaves a narrow one alone;
+        # \resizebox{\columnwidth}{!} would magnify it instead. \columnwidth
+        # rather than \textwidth: in two-column formats (ICML) \textwidth is the
+        # full page and a float wider than a column gets lost (BUG-109b).
+        lines_out.append("\\adjustbox{max width=\\columnwidth}{%")
+    lines_out.append(env_begin)
     lines_out.append("\\toprule")
     lines_out.append(
         " & ".join(f"\\textbf{{{_convert_inline(c)}}}" for c in header) + " \\\\"
@@ -1170,12 +1463,13 @@ def _render_table(table_lines: list[str], caption: str = "") -> str:
         # Pad row to match header length
         padded = row + [""] * (ncols - len(row))
         lines_out.append(
-            " & ".join(_convert_inline(c) for c in padded[:ncols]) + " \\\\"
+            " & ".join(_cell_breakable(_convert_inline(c)) for c in padded[:ncols])
+            + " \\\\"
         )
     lines_out.append("\\bottomrule")
-    lines_out.append("\\end{tabular}")
+    lines_out.append(env_end)
     if needs_resize:
-        lines_out.append("}")  # close resizebox
+        lines_out.append("}")  # close \\adjustbox
     lines_out.append("\\end{table}")
 
     return "\n".join(lines_out)
@@ -1433,6 +1727,10 @@ def _render_figure(caption: str, path: str) -> str:
     fig_num = _next_figure_num()
     # Sanitize path for LaTeX: replace spaces, keep underscores
     path = path.replace(" ", "_")
+    # Strip any "Figure N:"/"Figure N." prefix baked into the caption text, else
+    # LaTeX's automatic "Figure N:" doubles it (e.g. "Figure 1: Figure 3: ...").
+    if caption:
+        caption = re.sub(r"^\s*Figure\s+\d+\s*[.:]\s*", "", caption)
     cap_tex = _convert_inline(caption) if caption else f"Figure {fig_num}"
     label_key = re.sub(r"[^a-z0-9]+", "_", caption.lower()).strip("_")[:30]
     if not label_key:
@@ -1489,6 +1787,33 @@ def _convert_inline(text: str) -> str:
     text = text.replace("\u2260", "$\\neq$")       # ≠
     text = text.replace("\u2208", "$\\in$")         # ∈
     text = text.replace("\u221e", "$\\infty$")      # ∞
+    text = text.replace("\u2205", "$\\emptyset$")  # ∅ empty set
+    text = text.replace("\u2200", "$\\forall$")    # ∀
+    text = text.replace("\u2203", "$\\exists$")    # ∃
+    text = text.replace("\u2227", "$\\wedge$")     # ∧
+    text = text.replace("\u2228", "$\\vee$")       # ∨
+    text = text.replace("\u00ac", "$\\neg$")       # ¬
+    text = text.replace("\u2286", "$\\subseteq$")  # ⊆
+    text = text.replace("\u2282", "$\\subset$")    # ⊂
+    text = text.replace("\u222a", "$\\cup$")       # ∪
+    text = text.replace("\u2229", "$\\cap$")       # ∩
+    text = text.replace("\u22a5", "$\\perp$")      # ⊥
+    text = text.replace("\u2218", "$\\circ$")      # ∘
+    text = text.replace("\u22c5", "$\\cdot$")      # ⋅
+    text = text.replace("\u2211", "$\\sum$")       # ∑
+    text = text.replace("\u220f", "$\\prod$")      # ∏
+    text = text.replace("\u2202", "$\\partial$")   # ∂
+    text = text.replace("\u2207", "$\\nabla$")     # ∇
+    text = text.replace("\u2261", "$\\equiv$")     # ≡
+    text = text.replace("\u2212", "$-$")             # − minus
+    # Subscript digits ₀-₉ -> $_0$..$_9$
+    for _sd in range(10):
+        text = text.replace(chr(0x2080 + _sd), f"$_{_sd}$")
+    # Superscript digits (irregular codepoints) -> $^0$..$^9$
+    for _sc, _sd in (("\u2070","0"),("\u00b9","1"),("\u00b2","2"),("\u00b3","3"),
+                     ("\u2074","4"),("\u2075","5"),("\u2076","6"),("\u2077","7"),
+                     ("\u2078","8"),("\u2079","9")):
+        text = text.replace(_sc, f"$^{_sd}$")
 
     # BUG-110: Replace Unicode Greek letters with LaTeX math equivalents.
     # These appear when LLMs emit raw Unicode (e.g. "ε-greedy" instead of
@@ -1496,6 +1821,13 @@ def _convert_inline(text: str) -> str:
     for _uchar, _lcmd in _UNICODE_GREEK_TO_LATEX.items():
         if _uchar in text:
             text = text.replace(_uchar, _lcmd)
+
+    # Safety net: strip any remaining Unicode symbols in blocks pdflatex's
+    # inputenc cannot typeset (math operators, arrows, sub/superscripts,
+    # letterlike, technical, shapes). Common ones are mapped above; this keeps
+    # an unmapped symbol from causing a fatal "Unicode character not set up".
+    text = re.sub(r"[\u2070-\u209f\u2100-\u214f\u2190-\u21ff\u2200-\u22ff"
+                  r"\u2300-\u23ff\u25a0-\u25ff\u2600-\u27bf]", "", text)
 
     # Protect math and cite from escaping
     protected: list[str] = []
@@ -1520,6 +1852,16 @@ def _convert_inline(text: str) -> str:
     # LLMs often pre-escape underscores/etc: e.g. RawObs\_PPO → should stay
     # as \_, not become \\_ which pdflatex interprets as linebreak + subscript.
     text = re.sub(r"\\([#%&_{}])", _protect, text)
+
+    # BUG: Protect markdown-escaped asterisks (\*) as a LITERAL '*' so the
+    # bold/italic regexes below do not mistake them for emphasis delimiters.
+    # e.g. a stats-table footnote "*\\* p<0.05 ...*" must become
+    # \textit{* p<0.05 ...}, NOT \textit{\} ...} (unclosed -> fatal compile).
+    def _protect_star(m: re.Match[str]) -> str:
+        idx = len(protected)
+        protected.append("*")
+        return f"\x00PROT{idx}\x00"
+    text = re.sub(r"\\\*", _protect_star, text)
 
     # Protect \(...\) patterns with linebreaks already handled
     # (should be caught above, but safety net)

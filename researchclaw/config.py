@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+import os
 import sys
 import yaml
 
@@ -200,8 +201,35 @@ class LlmConfig:
     primary_model: str = ""
     fallback_models: tuple[str, ...] = ()
     s2_api_key: str = ""
+    s2_api_key_env: str = ""
     notes: str = ""
     timeout_sec: int = 600
+    # Independent reviewer/judge model (P0-3: break review same-source).
+    # Empty reviewer_model => reviewing/judging reuses the generator model
+    # (backward-compatible). If only reviewer_model is set, the reviewer reuses
+    # the main provider/base_url/key but with a different model. Set
+    # reviewer_provider/base_url/api_key(_env) for a fully independent provider
+    # (e.g. generator=GPT, reviewer=Claude).
+    reviewer_model: str = ""
+    reviewer_provider: str = ""
+    reviewer_base_url: str = ""
+    reviewer_api_key: str = ""
+    reviewer_api_key_env: str = ""
+    # Reasoning effort for OpenAI reasoning models (o-series, gpt-5.x):
+    # xhigh|high|medium|low|minimal|none. Empty => provider default.
+    reasoning_effort: str = ""
+    # Multi-model debate engine (Stage 8/14/18). Opt-in; the debate panel reuses
+    # existing models (primary_model + reviewer_model + fallback_models, deduped),
+    # each role bound to a different model. Judge reuses reviewer_model.
+    debate_enabled: bool = False
+    debate_rounds: int = 1
+    # Best-of-N tournament selection (Stage 8 hypotheses / Stage 9 design).
+    # Opt-in; generate N diverse candidates (round-robin over the debate panel
+    # when available), then an independent judge (reviewer_model) scores/ranks
+    # and the single winner proceeds. Keeps the pipeline linear (one canonical
+    # artifact per stage). tournament_candidates < 2 disables the tournament.
+    tournament_enabled: bool = False
+    tournament_candidates: int = 3
     acp: AcpConfig = field(default_factory=AcpConfig)
 
 
@@ -226,6 +254,14 @@ class SandboxConfig:
         "sklearn",
     )
     max_memory_mb: int = 4096
+    # P2: opt-in dependency provisioning. "none" (default) = run as-is, no
+    # install (current behaviour). Any other value enables a setup phase that
+    # builds a per-run venv (--system-site-packages), pip installs
+    # requirements.txt, and runs setup.py for dataset downloads before the
+    # experiment. Local subprocess sandbox cannot hard-seal network at run time
+    # (unlike docker), so the policy mainly toggles provisioning on/off here.
+    network_policy: str = "none"
+    provision_timeout_sec: int = 900
 
 
 @dataclass(frozen=True)
@@ -550,6 +586,12 @@ class ExperimentConfig:
     metric_key: str = "primary_metric"
     metric_direction: str = "minimize"
     keep_threshold: float = 0.0
+    # Stage-10→12 smoke test: after code generation, run the generated project on
+    # a tiny budget (ARC_SMOKE=1) to catch runtime logic bugs (import errors,
+    # NoneType, param clobber, DataParallel) in minutes instead of hours into the
+    # full run. Only runs for sandbox/docker modes with provisioning enabled.
+    smoke_test_enabled: bool = True
+    smoke_test_timeout_sec: int = 600
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     docker: DockerSandboxConfig = field(default_factory=DockerSandboxConfig)
     agentic: AgenticConfig = field(default_factory=AgenticConfig)
@@ -1142,9 +1184,27 @@ def _parse_llm_config(data: dict[str, Any]) -> LlmConfig:
         api_key=data.get("api_key", ""),
         primary_model=data.get("primary_model", ""),
         fallback_models=tuple(data.get("fallback_models") or ()),
-        s2_api_key=data.get("s2_api_key", ""),
+        s2_api_key=(
+            data.get("s2_api_key", "")
+            or (
+                os.environ.get(data["s2_api_key_env"], "")
+                if data.get("s2_api_key_env")
+                else ""
+            )
+        ),
+        s2_api_key_env=data.get("s2_api_key_env", ""),
         notes=data.get("notes", ""),
         timeout_sec=_safe_int(data.get("timeout_sec"), 600),
+        reviewer_model=data.get("reviewer_model", ""),
+        reasoning_effort=str(data.get("reasoning_effort", "") or ""),
+        reviewer_provider=data.get("reviewer_provider", ""),
+        reviewer_base_url=data.get("reviewer_base_url", ""),
+        reviewer_api_key=data.get("reviewer_api_key", ""),
+        reviewer_api_key_env=data.get("reviewer_api_key_env", ""),
+        debate_enabled=bool(data.get("debate_enabled", False)),
+        debate_rounds=_safe_int(data.get("debate_rounds"), 1),
+        tournament_enabled=bool(data.get("tournament_enabled", False)),
+        tournament_candidates=_safe_int(data.get("tournament_candidates"), 3),
         acp=AcpConfig(
             agent=acp_data.get("agent", "claude"),
             cwd=acp_data.get("cwd", "."),
@@ -1244,6 +1304,8 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
         metric_key=data.get("metric_key", "primary_metric"),
         metric_direction=data.get("metric_direction", "minimize"),
         keep_threshold=_safe_float(data.get("keep_threshold"), 0.0),
+        smoke_test_enabled=bool(data.get("smoke_test_enabled", True)),
+        smoke_test_timeout_sec=_safe_int(data.get("smoke_test_timeout_sec"), 600),
         sandbox=SandboxConfig(
             python_path=sandbox_data.get("python_path", DEFAULT_PYTHON_PATH),
             gpu_required=bool(sandbox_data.get("gpu_required", False)),
@@ -1251,6 +1313,12 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
                 sandbox_data.get("allowed_imports", SandboxConfig.allowed_imports)
             ),
             max_memory_mb=_safe_int(sandbox_data.get("max_memory_mb"), 4096),
+            network_policy=_validate_network_policy(
+                sandbox_data.get("network_policy", "none"), default="none"
+            ),
+            provision_timeout_sec=_safe_int(
+                sandbox_data.get("provision_timeout_sec"), 900
+            ),
         ),
         docker=DockerSandboxConfig(
             image=docker_data.get("image", "researchclaw/experiment:latest"),
