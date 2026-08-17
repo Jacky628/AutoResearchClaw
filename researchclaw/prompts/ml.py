@@ -889,7 +889,7 @@ _DEFAULT_STAGES: dict[str, dict[str, Any]] = {
             "real value above (e.g. `data=ds[split]` then `data=None` before "
             "`len(data)`) — recurring runtime crash the validator can't catch. "
             "CACHE KEYS must include every ablation flag (e.g. "
-            "proxy_features_seed{n}_{full|hidden}.npz); for a feature-drop "
+            "proxy_features_seed<n>_<full|hidden>.npz); for a feature-drop "
             "ablation, SLICE a superset cache, don't reload a dim-mismatched "
             "file.\n"
             "- REWARD DEAD-ZONE GUARD (RL only): if the reward is constant "

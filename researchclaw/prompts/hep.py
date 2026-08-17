@@ -305,6 +305,7 @@ STAGES: dict[str, dict[str, Any]] = {
             "Problem tree:\n{problem_tree}"
         ),
         "json_mode": True,
+        "max_tokens": 2000,
     },
     "literature_collect": {
         "system": (
@@ -368,6 +369,7 @@ STAGES: dict[str, dict[str, Any]] = {
             "Candidates JSONL:\n{candidates_text}"
         ),
         "json_mode": True,
+        "max_tokens": 3000,
     },
     "knowledge_extract": {
         "system": (
@@ -397,6 +399,7 @@ STAGES: dict[str, dict[str, Any]] = {
             "Shortlist:\n{shortlist}"
         ),
         "json_mode": True,
+        "max_tokens": 6000,
     },
     # ── Phase C: Knowledge Synthesis ────────────────────────────────────── #
     "synthesis": {
@@ -630,6 +633,7 @@ STAGES: dict[str, dict[str, Any]] = {
             "exclusion contour (quantitatively if possible).\n\n"
             "Hypotheses:\n{hypotheses}"
         ),
+        "max_tokens": 8000,
     },
     "code_generation": {
         "system": (
@@ -810,7 +814,7 @@ STAGES: dict[str, dict[str, Any]] = {
             "- Print regime labels: "
             "`condition=<name> regime=<regime_name> {metric}: <value>`.\n\n"
             "BUDGET AWARENESS:\n"
-            "- Total budget: {time_budget}s. Parameter scan: a 50×50 grid "
+            "- Respect the total budget stated above. Parameter scan: a 50×50 grid "
             "over ~8 conditions at 0.5 s/point ≈ 10 000 s. If that exceeds "
             "the budget, reduce the grid to 25×25 first, then reduce "
             "conditions.\n\n"
