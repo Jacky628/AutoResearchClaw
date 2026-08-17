@@ -32,6 +32,9 @@ PROVIDER_PRESETS = {
     "minimax": {
         "base_url": "https://api.minimaxi.com/v1",
     },
+    "ollama": {
+        "base_url": "http://localhost:11434/v1",
+    },
     "openai-compatible": {
         "base_url": None,  # Use user-provided base_url
     },

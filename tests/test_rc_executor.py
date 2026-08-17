@@ -1313,8 +1313,11 @@ class TestTopicConstraintBlock:
 
 
 class TestParseDecision:
-    def test_proceed_default(self) -> None:
-        assert rc_executor._parse_decision("Some random text") == "proceed"
+    def test_no_keyword_returns_none(self) -> None:
+        # Without a PROCEED/PIVOT/REFINE keyword the parser must NOT default
+        # to "proceed" — that previously caused inconclusive model output
+        # to silently advance the pipeline. See researchclaw_rung_b_mapping.md.
+        assert rc_executor._parse_decision("Some random text") is None
 
     def test_proceed_explicit(self) -> None:
         text = "## Decision\nPROCEED\n## Justification\nGood results."
@@ -1385,6 +1388,112 @@ class TestResearchDecisionStructured:
             stage_dir, run_dir, rc_config, adapters, llm=None
         )
         assert result.decision == "proceed"
+
+    def test_ambiguous_llm_response_pauses(
+        self, tmp_path: Path, rc_config: RCConfig, adapters: AdapterBundle
+    ) -> None:
+        # Inconclusive LLM prose with no PROCEED/PIVOT/REFINE keyword must
+        # pause the pipeline rather than silently advancing as "proceed".
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        stage_dir = run_dir / "stage-15"
+        stage_dir.mkdir(parents=True)
+        _write_prior_artifact(run_dir, 14, "analysis.md", "# Analysis\nMixed results.")
+        fake_llm = FakeLLMClient(
+            "After reviewing the results, the experimental evidence is "
+            "inconclusive and additional data collection is needed."
+        )
+        result = rc_executor._execute_research_decision(
+            stage_dir, run_dir, rc_config, adapters, llm=fake_llm
+        )
+        assert result.status == StageStatus.PAUSED
+        assert result.decision == "undecided"
+        import json
+        data = json.loads((stage_dir / "decision_structured.json").read_text())
+        assert data["decision"] is None
+        assert data["decision_parse_failed"] is True
+
+
+class TestExperimentDesignGuard:
+    # The schema-deficit guard added in _execute_experiment_design uses
+    # _normalize_plan_field so that valid non-list field shapes (str, dict,
+    # list[str], list[dict]) — which the rest of the file already supports
+    # via _normalize_plan_field at the trim/conditions logic — do NOT
+    # falsely trigger a PAUSED outcome.
+
+    def test_normalize_string_returns_non_empty(self) -> None:
+        from researchclaw.pipeline.stage_impls._experiment_design import _normalize_plan_field
+        assert _normalize_plan_field("standard ResNet baseline") == [
+            "standard ResNet baseline"
+        ]
+
+    def test_normalize_dict_returns_non_empty(self) -> None:
+        from researchclaw.pipeline.stage_impls._experiment_design import _normalize_plan_field
+        result = _normalize_plan_field({"groupnorm": "GroupNorm replacement"})
+        assert len(result) == 1
+        assert result[0]["name"] == "groupnorm"
+
+    def test_normalize_none_returns_empty(self) -> None:
+        from researchclaw.pipeline.stage_impls._experiment_design import _normalize_plan_field
+        assert _normalize_plan_field(None) == []
+
+    def test_normalize_empty_string_returns_empty(self) -> None:
+        from researchclaw.pipeline.stage_impls._experiment_design import _normalize_plan_field
+        assert _normalize_plan_field("") == []
+
+    def test_empty_dict_response_pauses(
+        self, tmp_path: Path, rc_config: RCConfig, adapters: AdapterBundle
+    ) -> None:
+        # When the LLM returns "{}" the plan parses to an empty dict, every
+        # fallback cascade is skipped (plan is never None), and the new
+        # schema-deficit guard must pause rather than ship an exp_plan.yaml
+        # with nothing but topic.
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        stage_dir = run_dir / "stage-09"
+        stage_dir.mkdir(parents=True)
+        _write_prior_artifact(
+            run_dir, 8, "hypotheses.md",
+            "# Hypotheses\n\nGeneral statements with no extractable method names.\n",
+        )
+        fake_llm = FakeLLMClient("{}")
+        result = rc_executor._execute_experiment_design(
+            stage_dir, run_dir, rc_config, adapters, llm=fake_llm
+        )
+        assert result.status == StageStatus.PAUSED
+        assert result.decision == "schema_deficient"
+        assert (stage_dir / "plan_meta.json").exists()
+        assert not (stage_dir / "exp_plan.yaml").exists()
+        import json
+        meta = json.loads((stage_dir / "plan_meta.json").read_text())
+        assert meta["outcome"] == "model_response_schema_deficient"
+        assert set(meta["missing_required_keys"]) == {
+            "baselines", "proposed_methods", "ablations",
+        }
+
+
+class TestResourcePlanningFallback:
+    def test_wrong_schema_falls_back_to_template(
+        self, tmp_path: Path, rc_config: RCConfig, adapters: AdapterBundle
+    ) -> None:
+        # A parseable wrong-schema dict (no `tasks` key) must trigger the
+        # template fallback rather than silently being accepted as the
+        # schedule. The output must still satisfy the contract (DONE +
+        # `tasks` populated) and record the source in `_meta`.
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        stage_dir = run_dir / "stage-11"
+        stage_dir.mkdir(parents=True)
+        fake_llm = FakeLLMClient('{"unrelated_key": "value"}')
+        result = rc_executor._execute_resource_planning(
+            stage_dir, run_dir, rc_config, adapters, llm=fake_llm
+        )
+        assert result.status == StageStatus.DONE
+        import json
+        schedule = json.loads((stage_dir / "schedule.json").read_text())
+        assert isinstance(schedule.get("tasks"), list)
+        assert len(schedule["tasks"]) >= 2
+        assert schedule["_meta"]["source"] == "template"
 
 
 class TestMultiPerspectiveGenerate:
@@ -2242,9 +2351,53 @@ class TestDataIntegrityBlock:
             stage_dir, run_dir, rc_config, adapters, llm=llm
         )
 
-        assert result.status == StageStatus.FAILED
+        # PAUSED with explicit decision + meta artifact (cleanup of the
+        # previous FAILED + "unknown error" framing).
+        assert result.status == StageStatus.PAUSED
+        assert result.decision == "blocked_no_metrics"
+        assert "no real metrics" in (result.error or "")
         draft = (stage_dir / "paper_draft.md").read_text(encoding="utf-8")
         assert "Blocked" in draft or "BLOCKED" in draft or "no metrics" in draft.lower()
+        meta = json.loads((stage_dir / "paper_meta.json").read_text(encoding="utf-8"))
+        assert meta["outcome"] == "blocked_no_metrics"
+        # LLM should NOT have been called
+        assert len(llm.calls) == 0
+
+    def test_paper_draft_blocked_with_simulated_data(
+        self, tmp_path: Path, run_dir: Path, rc_config: RCConfig, adapters: AdapterBundle,
+    ) -> None:
+        # All run files report status="simulated" → R10 block fires.
+        # Post-cleanup: PAUSED with paper_meta.json and decision="blocked_simulated_data".
+        _write_prior_artifact(run_dir, 16, "outline.md", "# Outline\n## Abstract\n")
+        runs_dir = run_dir / "stage-12" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(2):
+            (runs_dir / f"run-{i + 1}.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": f"run-{i + 1}",
+                        "status": "simulated",
+                        "key_metrics": {"primary_metric": 0.3 + i * 0.03},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        stage_dir = run_dir / "stage-17"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+
+        llm = FakeLLMClient("should not be called")
+        result = rc_executor._execute_paper_draft(
+            stage_dir, run_dir, rc_config, adapters, llm=llm
+        )
+
+        assert result.status == StageStatus.PAUSED
+        assert result.decision == "blocked_simulated_data"
+        assert "simulated" in (result.error or "").lower()
+        assert (stage_dir / "paper_draft.md").exists()
+        meta = json.loads((stage_dir / "paper_meta.json").read_text(encoding="utf-8"))
+        assert meta["outcome"] == "blocked_simulated_data"
+        assert meta.get("is_literature_first_topic") is False
         # LLM should NOT have been called
         assert len(llm.calls) == 0
 

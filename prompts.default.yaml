@@ -382,21 +382,39 @@ stages:
   search_strategy:
     json_mode: true
     system: You design literature retrieval strategies and source verification plans. You aim for COMPREHENSIVE coverage — a good research paper needs 30-60 references.
-    user: 'Create a merged search strategy package.
-
+    user: |-
+      Create a merged search strategy package.
       Return a JSON object with keys: search_plan_yaml, sources.
 
-      search_plan_yaml must be valid YAML text with search_strategies containing at least 3 strategies,
-      each with 3-5 diverse keyword queries (short, 3-6 words each). Generate at least 8 total queries.
-      Cover: core topic, related methods, benchmarks/datasets, theoretical foundations, applications.
+      search_plan_yaml MUST be valid YAML text that INCLUDES this required query block (additional non-query metadata fields are allowed alongside it):
+
+        topic: <YOUR_TOPIC>
+        search_strategies:
+          - name: <CATEGORY_LABEL_1>
+            queries:
+              - <SHORT_QUERY_1>
+              - <SHORT_QUERY_2>
+          - name: <CATEGORY_LABEL_2>
+            queries:
+              - <SHORT_QUERY_3>
+              - <SHORT_QUERY_4>
+
+      Requirements:
+      - At least 3 strategies. Each strategy MUST have 3-5 queries.
+      - At least 8 total queries across all strategies.
+      - Each query MUST be a plain string of 3-6 words.
+      - Cover: core topic, related methods, benchmarks/datasets, theoretical foundations, applications.
+      - Additional fields such as `filters`, `sources`, `max_results_per_query`, `deduplication`, `date_window`, or per-strategy metadata may appear alongside the required block.
+
+      STRICT — all actual search queries MUST live only under `search_strategies[].queries`. Do NOT place queries elsewhere:
+      - Do NOT use `query_strategies`, `sub_question_map`, `sub_questions`, or a top-level `queries:` list.
+      - Do NOT use `keyword_groups`, `boolean_seeds`, `keywords`, `seeds`, or `search_terms` as the query list.
+      - Each query MUST be a plain string, not a dict like `{id: Q1, string: ...}`.
 
       sources must include id,name,type,url,status,query,verified_at.
-
       Topic: {topic}
-
       Problem tree:
-
-      {problem_tree}'
+      {problem_tree}
   synthesis:
     system: You are a synthesis specialist for literature reviews.
     user: 'Produce merged synthesis output (topic clusters + research gaps).
