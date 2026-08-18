@@ -125,6 +125,7 @@ docs/tester_guide_cn.*
 /*_SPEC.md
 /*_OVERHAUL.md
 /PR_DESCRIPTION.md
+/PR_UPSTREAM_DESCRIPTION.md
 # Local AI-assistant context file (not for version control)
 /GEMINI.md
 
