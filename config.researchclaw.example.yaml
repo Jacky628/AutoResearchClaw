@@ -86,17 +86,22 @@ llm:
   reviewer_api_key_env: ""    # e.g. "ANTHROPIC_API_KEY" — defaults to api_key_env
   reviewer_api_key: ""        # inline key (optional; prefer the env var)
 
-  # --- Multi-model debate for Stage 8 hypothesis generation (opt-in) ---
+  # --- Multi-model debate: Stages 8, 14 and 18 (opt-in) ---
+  # Stage 8 = hypothesis generation, Stage 14 = result analysis,
+  # Stage 18 = peer review (three reviewer roles, each on a different model).
   # Builds a panel from primary_model + reviewer_model + fallback_models
   # (deduplicated) and binds each debate role to a different model, so the
   # perspectives genuinely disagree instead of one model arguing with itself.
-  # After `debate_rounds` rebuttal round(s), reviewer_model RANKS the positions
-  # and primary_model writes the final text from that ranking — ranking and
-  # writing are split so the disagreements are not averaged into consensus.
+  # After `debate_rounds` rebuttal round(s), reviewer_model RANKS the positions.
+  # On Stages 8 and 14 primary_model then writes the final text from that
+  # ranking — ranking and writing are split so the disagreements are not
+  # averaged into consensus. Stage 18 is the deliberate exception: the reviewer
+  # writes the report itself, because handing the write-up back to the author
+  # model would defeat the purpose of peer review.
   # Records debate_record.json. Multiplies LLM calls.
   #
   # To enable it you need BOTH of the following, plus a real panel:
-  #   debate_enabled: true       # otherwise Stage 8 uses the single-model path
+  #   debate_enabled: true       # otherwise the single-model path is used
   #   tournament_enabled: false  # the tournament takes priority on Stage 8
   # and primary_model + reviewer_model + fallback_models must dedupe to >= 2
   # distinct models. A reviewer_model different from primary_model keeps the
@@ -106,8 +111,10 @@ llm:
   # debate_enabled: false
   # debate_rounds: 1           # rebuttal rounds; 0 = opening statements only
 
-  # --- Best-of-N tournament for Stage 8 hypothesis generation (opt-in) ---
-  # Generates N candidate hypothesis sets from diverse stances (round-robin over
+  # --- Best-of-N tournament: Stages 8 and 9 (opt-in) ---
+  # Stage 8 = hypothesis sets, Stage 9 = experiment designs (candidates are
+  # generated from three fixed stances: ambitious / robust / compute-efficient).
+  # Generates N candidate artifacts from diverse stances (round-robin over
   # the debate panel when one is available), then reviewer_model scores and ranks
   # them and only the winner proceeds — the pipeline stays linear, with one
   # canonical artifact per stage. Blank generations are dropped before judging,
